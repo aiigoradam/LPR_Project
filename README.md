@@ -20,18 +20,22 @@ These components form the foundation for creating a robust dataset that simulate
 ## Features
 
 ### Synthetic Data Generation
+
 - Creates realistic license plate images with customizable parameters
 - Supports various formats and styles of license plates
 
 ### Perspective Transformation (Warping)
+
 - Simulates extreme viewing angles
 - Applies projective geometry to distort license plate images
 
 ### Noise Injection
+
 - Adds various types of noise to images (e.g., Gaussian, Salt-and-Pepper)
 - Simulates real-world image degradation
 
 ### Perspective Correction (Dewarping)
+
 - Attempts to reverse the warping process
 - Provides a baseline for comparison with future AI-enhanced methods
 

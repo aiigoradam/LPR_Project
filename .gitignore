@@ -9,8 +9,7 @@ __pycache__/
 *.ipynb_checkpoints/
 
 # Data folders
-data/raw/
-data/processed/
+data/
 
 # Ignore model checkpoints
 models/*.h5
