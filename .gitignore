@@ -17,3 +17,5 @@ models/*.pth
 
 # VSCode settings folder
 .vscode/
+
+checkpoint_*.pth

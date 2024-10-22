@@ -330,13 +330,13 @@ def generate_dataset(num_samples, output_dir, alpha_ranges, noise_level_range, o
 # =====================================
 
 def main():
-    num_samples = 3  # Number of images to generate
+    num_samples = 5  # Number of images to generate
     output_dir = "data"  # Directory to save the generated images
     alpha_ranges = {
-        "negative": (-85, -80),  # Negative alpha range
-        "positive": (80, 85)     # Positive alpha range
+        "negative": (-85, -85),  # Negative alpha range
+        "positive": (85, 85)     # Positive alpha range
     }
-    noise_level_range = (10, 150)  # Uniform noise levels from 10 to 150
+    noise_level_range = (100, 150)  # Uniform noise levels from 10 to 150
     
     factor = 2 # Scaling factor for image size (0: 128x32, 1: 256x64, 2: 512x128, 3: 1024x256)
     
