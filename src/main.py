@@ -15,13 +15,12 @@ import os
 # Add the parent directory of src (LPR_Project root) to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from models.unet import UNet  # Now this import should work
+from models.unet import UNet 
 
  # Device configuration (use GPU if available)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f'Using device: {device}')
 
-# Assuming you already have the LicensePlateDataset class and trained model
 
 def plot_single_test_output(model, original_path, distorted_path, device, transform=None):
     model.eval()
@@ -45,7 +44,7 @@ def plot_single_test_output(model, original_path, distorted_path, device, transf
     predicted_image_pil = transform_to_pil(predicted_tensor)
 
     # Plot the original, distorted, and predicted images
-    plt.figure(figsize=(12, 4))
+    plt.figure(figsize=(8, 8))
     # Distorted Image
     plt.subplot(3, 1, 1)
     plt.title('Distorted Image')
@@ -66,19 +65,18 @@ def plot_single_test_output(model, original_path, distorted_path, device, transf
 
     plt.show()
 
-# Assuming you've already trained your UNet model and saved it
-# Load the model (e.g., 'checkpoint_epoch_20.pth')
+# Load the model 
 model = UNet(in_channels=3, out_channels=3).to(device)
 
 # Load the state dictionary (model weights) safely
-state_dict = torch.load('checkpoint_epoch_20.pth', map_location=device, weights_only=True)
+state_dict = torch.load('models/best_model_checkpoint.pth', map_location=device, weights_only=True)
 
 # Load the weights into the model
 model.load_state_dict(state_dict)
 
 # Paths to the specific images
-original_image_path = 'data/original_1.png'
-distorted_image_path = 'data/distorted_1.png'
+original_image_path = 'data_unique/original_9.png'
+distorted_image_path = 'data_unique/distorted_9.png'
 
 # Plot the output for the selected image pair
 plot_single_test_output(model, original_image_path, distorted_image_path, device)

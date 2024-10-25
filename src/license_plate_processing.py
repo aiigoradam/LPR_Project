@@ -4,6 +4,7 @@ import json
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import cv2
+from tqdm import tqdm 
 
 # =====================================
 # License Plate Generation
@@ -62,6 +63,8 @@ def create_license_plate(width, height, text_size):
 
     # Paste the original image in the center
     new_image.paste(image, (x1, y1))
+    
+    plate_number = plate_number.replace(" ", "")  # Plate number without spaces for metadata
 
     return new_image, corners, plate_number
 
@@ -269,7 +272,7 @@ def manage_existing_data(output_dir, num_samples):
 # Dataset Generation with Cropping
 # =====================================
 
-def generate_dataset(num_samples, output_dir, alpha_ranges, noise_level_range, original_width, original_height, text_size):
+def generate_dataset(num_samples, output_dir, alpha_ranges, noise_level_range, original_width, original_height, text_size, seed=None):
     """
     Generates and saves the dataset, including cropping of distorted images to original plate size.
     
@@ -280,13 +283,18 @@ def generate_dataset(num_samples, output_dir, alpha_ranges, noise_level_range, o
         noise_level_range (tuple): Range of noise levels (mean, stddev) for random Gaussian noise.
         original_width (int): Original width of the license plate.
         original_height (int): Original height of the license plate.
+        seed (int): Random seed for reproducibility.
     """
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+    
     os.makedirs(output_dir, exist_ok=True)
     
     # Manage existing data before generating new data
     manage_existing_data(output_dir, num_samples)
    
-    for idx in range(num_samples):
+    for idx in tqdm(range(num_samples), desc="Generating samples"):
         original_image_pil, src_points, plate_number = create_license_plate(original_width, original_height, text_size)
         original_image_rgb = np.array(original_image_pil)
 
@@ -330,25 +338,35 @@ def generate_dataset(num_samples, output_dir, alpha_ranges, noise_level_range, o
 # =====================================
 
 def main():
-    num_samples = 5  # Number of images to generate
-    output_dir = "data"  # Directory to save the generated images
+    num_samples = 5000  # Number of images to generate for the dataset
+    unique_samples = 20  # Number of unique images to generate for experiments
+    output_dir = "data"  # Directory to save the dataset images
+    unique_output_dir = "data_unique"  # Directory to save the unique experimental images
+    seed = 42  # Random seed for reproducibility
+    
+    # Define ranges for alpha (rotation angles) and noise levels
     alpha_ranges = {
-        "negative": (-85, -85),  # Negative alpha range
-        "positive": (85, 85)     # Positive alpha range
+        "negative": (-82, -87),  # Negative alpha range
+        "positive": (82, 87)     # Positive alpha range
     }
-    noise_level_range = (100, 150)  # Uniform noise levels from 10 to 150
+    noise_level_range = (20, 250)  # Uniform noise levels 
     
-    factor = 2 # Scaling factor for image size (0: 128x32, 1: 256x64, 2: 512x128, 3: 1024x256)
+    factor = 2  # Scaling factor for image size (0: 128x32, 1: 256x64, 2: 512x128, 3: 1024x256)
     
-    # Calculate the scaling multiplier 
+    # Calculate the scaling multiplier
     scale = 2 ** factor
 
     # Scale the height, width, and text size
     f = int(128 * scale)         # Scaled width (focal length)
-    h = int(32 * scale)        # Scaled height
+    h = int(32 * scale)          # Scaled height
     text_size = int(25 * scale)  # Scaled text size
 
-    generate_dataset(num_samples, output_dir, alpha_ranges, noise_level_range, f, h, text_size)
+    # Generate the regular dataset
+    generate_dataset(num_samples, output_dir, alpha_ranges, noise_level_range, f, h, text_size, seed=seed)
+    
+    # Generate unique images for experiments (not part of the dataset)
+    generate_dataset(unique_samples, unique_output_dir, alpha_ranges, noise_level_range, f, h, text_size, seed=seed+1)
 
 if __name__ == "__main__":
     main()
+
