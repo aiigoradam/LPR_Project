@@ -1,3 +1,4 @@
+# Pix2Pix Image-to-Image Translation implementation using the U-Net Generator and PatchGAN Discriminator
 import torch
 import torch.nn as nn
 
@@ -33,36 +34,30 @@ class DoubleConv(nn.Module):
         return self.double_conv(x)
 
 
-class UNet(nn.Module):
+class UNetGenerator(nn.Module):
     """
-    The U-Net architecture with encoder and decoder paths with skip connections.
-    
-    - **4 Encoder Layers**: Each with two 3x3 convolutions + ReLU and a 2x2 max-pooling 
-      to reduce spatial size, progressively increasing feature depth.
-    
-    - **Bottleneck Layer**: The deepest part, aggregating high-level features.
+    The U-Net Generator with encoder-decoder paths and skip connections.
 
-    - **4 Decoder Layers**: Each upsamples, concatenates skip connections from the 
-      encoder, and applies two 3x3 convolutions to reconstruct spatial detail.
-
-    - **Skip Connections**: Links encoder and decoder layers, aiding detail recovery.
-
-    - **Final Layer**: 1x1 convolution to match output channels.
+    Encoder gradually reduces spatial dimensions while increasing feature depth.
+    Decoder upsamples and incorporates features from corresponding encoder layers
+    for detail recovery through skip connections. The final layer applies `tanh`
+    for output in the range [-1, 1].
 
     Parameters:
     - `in_channels` (int): Number of input channels.
     - `out_channels` (int): Number of output channels.
-    - `init_features` (int): Starting number of feature maps (doubles at each encoder layer).
+    - `features` (int): Starting number of feature maps (doubles at each encoder layer).
 
     Input:
-    - Tensor of shape (in_channels, H, W), where H and W should be divisible by 16.
+    - Tensor of shape (in_channels, H, W).
 
     Output:
-    - Tensor of shape (out_channels, H, W).
+    - Tensor of shape (out_channels, H, W) in the range [-1, 1].
     """
     def __init__(self, in_channels=3, out_channels=3, features=64):
-        super(UNet, self).__init__()
-        # Encoder
+        super(UNetGenerator, self).__init__()
+        
+       # Encoder
         self.encoder1 = DoubleConv(in_channels, features)            # Input: 3 x 128 x 512, Output: features x 128 x 512
         self.pool1    = nn.MaxPool2d(kernel_size=2, stride=2)        # Downsample: features x 128 x 512 -> features x 64 x 256
         self.encoder2 = DoubleConv(features, features * 2)           # Input: features x 64 x 256, Output: (features*2) x 64 x 256
@@ -84,9 +79,12 @@ class UNet(nn.Module):
         self.decoder2 = DoubleConv((features * 2) * 2, features * 2)                                # Input: (features*4) x 64 x 256, Output: (features*2) x 64 x 256
         self.upconv1  = nn.ConvTranspose2d(features * 2, features, kernel_size=2, stride=2)         # Upsample: (features*2) x 64 x 256 -> features x 128 x 512
         self.decoder1 = DoubleConv(features * 2, features)                                          # Input: (features*2) x 128 x 512, Output: features x 128 x 512
-
-        # Final output layer
-        self.conv = nn.Conv2d(in_channels=features, out_channels=out_channels, kernel_size=1)  # Output: out_channels x 128 x 512
+        
+        # Final layer with tanh activation
+        self.final_conv = nn.Sequential(
+            nn.Conv2d(in_channels=features, out_channels=out_channels, kernel_size=1),  # Output: out_channels x 128 x 512
+            nn.Tanh()
+        )
 
     def forward(self, x):
         # Encoder path
@@ -115,5 +113,68 @@ class UNet(nn.Module):
         dec1 = torch.cat((dec1, enc1), dim=1)            # Concatenate with encoder1: (features*2) x 128 x 512
         dec1 = self.decoder1(dec1)                       # features x 128 x 512
 
-        # Output layer
-        return self.conv(dec1)                           # Output: out_channels x 128 x 512
+        # Final layer with tanh activation
+        return self.final_conv(dec1)                     # Output: out_channels x 128 x 512
+
+
+class PatchGANDiscriminator (nn.Module):
+    """
+    PatchGAN Discriminator for Pix2Pix Image-to-Image Translation.
+
+    This discriminator evaluates the "realness" of a transformation from a distorted 
+    input image to an enhanced target image by examining patches of the image. The input is:
+    - A pair of images: the distorted input and either the original (real) or generated 
+      (fake) target image, concatenated along the channel dimension.
+
+    Key Components:
+    - **Convolutional Layers**: Four downsampling layers that progressively reduce 
+      spatial dimensions while increasing feature depth.
+    - **Final Convolution Layer**: Outputs a single-channel feature map indicating 
+      real/fake probabilities at the patch level.
+
+    Parameters:
+    - `in_channels` (int): Number of channels in the input image (e.g., 3 for RGB).
+    - `features` (int): Base number of features for the convolutional layers.
+
+    Input:
+    - Concatenated image pair: `[distorted_image, target_image]`, with shape 
+      (in_channels * 2, H, W).
+
+    Output:
+    - A single-channel feature map, where each value represents the likelihood of 
+      the corresponding patch being "real."
+    """
+    def __init__(self, in_channels=3, features=64):
+        super(PatchGANDiscriminator , self).__init__()
+        self.model = nn.Sequential(
+            # Input: (in_channels * 2) x 128 x 512
+            nn.Conv2d(in_channels * 2, features, kernel_size=4, stride=2, padding=1),   # Output: features x 64 x 256
+            nn.LeakyReLU(0.2, inplace=True),
+
+            # Input: features x 64 x 256
+            nn.Conv2d(features, features * 2, kernel_size=4, stride=2, padding=1),      # Output: (features * 2) x 32 x 128
+            nn.BatchNorm2d(features * 2),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            # Input: (features * 2) x 32 x 128
+            nn.Conv2d(features * 2, features * 4, kernel_size=4, stride=2, padding=1),  # Output: (features * 4) x 16 x 64
+            nn.BatchNorm2d(features * 4),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            # Input: (features * 4) x 16 x 64
+            nn.Conv2d(features * 4, features * 8, kernel_size=4, stride=2, padding=1),  # Output: (features * 8) x 8 x 32
+            nn.BatchNorm2d(features * 8),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            # Output layer
+            # Input: (features * 8) x 8 x 32
+            nn.Conv2d(features * 8, 1, kernel_size=4, stride=1, padding=1)              # Output: 1 x 7 x 31
+        )
+
+    def forward(self, input_image, target_image):
+        # Concatenate input and target images along the channel dimension
+        x = torch.cat([input_image, target_image], dim=1)  # Shape: (batch_size, in_channels * 2, H, W)
+        return self.model(x)  # Output shape: (batch_size, 1, 7, 31)
+        
+
+

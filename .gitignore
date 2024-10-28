@@ -8,9 +8,11 @@ __pycache__/
 # Jupyter Notebook checkpoints
 *.ipynb_checkpoints/
 
-# Data folders
+# Folders
 data/
 data_unique/
+plots/
+output_samples_pix2pix_1/
 
 # Ignore model checkpoints
 models/*.h5

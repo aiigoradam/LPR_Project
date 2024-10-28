@@ -8,12 +8,20 @@ from tqdm import tqdm
 import sys
 import os
 import matplotlib.pyplot as plt
+import random
 
 # Add the parent directory of src (LPR_Project root) to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from models.unet import UNet
 from license_plate_dataset import LicensePlateDataset
+
+# Add the set_seed function
+def set_seed(seed):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 def compute_loss(outputs, targets, mse_loss, ssim_loss, alpha):
     mse = mse_loss(outputs, targets)
@@ -58,17 +66,20 @@ def main():
     # Device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
+    
+    # Set seed for reproducibility
+    set_seed(42)
 
     # Hyperparameters
     num_samples = 5000
     num_epochs = 50
     learning_rate = 0.001
     batch_size = 16
-    alpha = 0  # Weight for balancing MSE and SSIM (0 for only SSIM, 1 for only MSE)
+    ssim_mse_weight = 0  # Weight for balancing MSE and SSIM (0 for only SSIM, 1 for only MSE)
     patience = 5  # Early stopping patience
 
     # Image transformations
-    transform = transforms.Compose([transforms.ToTensor()])
+    transform = transforms.Compose([transforms.ToTensor()]) # No normalization needed for SSIM
 
     # Create datasets
     train_dataset = LicensePlateDataset(image_dir='data', split='train', num_samples=num_samples, transform=transform)  
@@ -118,14 +129,14 @@ def main():
             optimizer.zero_grad()
 
             outputs = model(distorted_images)
-            
+           
             # Compute combined loss
-            loss = compute_loss(outputs, original_images, mse_loss, ssim_loss, alpha)
-
-            loss.backward()
+            loss = compute_loss(outputs, original_images, mse_loss, ssim_loss, ssim_mse_weight)
+            
+            loss.backward() 
             optimizer.step()
 
-            running_loss += loss.item() * distorted_images.size(0)
+            running_loss += loss.item() * distorted_images.size(0) 
 
         # Calculate average training loss for the epoch
         epoch_loss = running_loss / len(train_loader.dataset)
@@ -133,7 +144,7 @@ def main():
         print(f"Epoch [{epoch+1}/{num_epochs}], Training Loss: {epoch_loss:.4f}")
 
         # Validate the model
-        val_loss = evaluate_model(model, val_loader, mse_loss, ssim_loss, device, alpha, phase='Validation')
+        val_loss = evaluate_model(model, val_loader, mse_loss, ssim_loss, device, ssim_mse_weight, phase='Validation')
         val_losses.append(val_loss)
 
         # Early stopping logic
@@ -160,7 +171,7 @@ def main():
     model.load_state_dict(torch.load(checkpoint_path), weights_only=True)
 
     # After training is done, evaluate on the test set
-    test_loss = evaluate_model(model, test_loader, mse_loss, ssim_loss, device, alpha, phase='Test')
+    test_loss = evaluate_model(model, test_loader, mse_loss, ssim_loss, device, ssim_mse_weight, phase='Test')
     print(f"Test Loss: {test_loss:.4f}")
 
 if __name__ == "__main__":
