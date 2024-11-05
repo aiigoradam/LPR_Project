@@ -2,13 +2,17 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from pytorch_msssim import SSIM
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 import torchvision.transforms as transforms
-from tqdm import tqdm  
+from torchvision.utils import make_grid
+from tqdm import tqdm
 import sys
 import os
 import matplotlib.pyplot as plt
 import random
+import time
+import numpy as np
+from torch.utils.tensorboard import SummaryWriter
 
 # Add the parent directory of src (LPR_Project root) to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -23,19 +27,19 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-def compute_loss(outputs, targets, mse_loss, ssim_loss, alpha):
-    mse = mse_loss(outputs, targets)
-    ssim = ssim_loss(outputs, targets)
+def compute_loss(outputs, targets, mse, ssim, p):
+    mse_loss = mse(outputs, targets)
+    ssim_loss = 1 - ssim(outputs, targets)
     
     # Combine MSE and SSIM losses
-    loss = alpha * mse + (1 - alpha) * (1 - ssim)
-    return loss
+    loss = p * mse_loss + (1 - p) * ssim_loss
+    return loss, mse_loss.item(), ssim_loss.item()
 
 def evaluate_model(model, dataloader, mse_loss, ssim_loss, device, alpha, phase):
     model.eval()
     epoch_loss = 0.0
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc=f"{phase}", leave=False):
+        for batch in dataloader:
             distorted_images = batch['distorted'].to(device)
             original_images = batch['original'].to(device)
 
@@ -64,6 +68,7 @@ def plot_losses(train_losses, val_losses, output_dir='plots'):
 
 def main():
     # Device configuration
+    global device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
     
@@ -71,32 +76,50 @@ def main():
     set_seed(42)
 
     # Hyperparameters
-    num_samples = 5000
     num_epochs = 50
     learning_rate = 0.001
     batch_size = 16
-    ssim_mse_weight = 0  # Weight for balancing MSE and SSIM (0 for only SSIM, 1 for only MSE)
+    ssim_mse_weight = 0.5  # Weight for balancing MSE and SSIM (0 for only SSIM, 1 for only MSE)
     patience = 5  # Early stopping patience
 
     # Image transformations
     transform = transforms.Compose([transforms.ToTensor()]) # No normalization needed for SSIM
 
-    # Create datasets
-    train_dataset = LicensePlateDataset(image_dir='data', split='train', num_samples=num_samples, transform=transform)  
-    val_dataset = LicensePlateDataset(image_dir='data', split='val', num_samples=num_samples, transform=transform)
-    test_dataset = LicensePlateDataset(image_dir='data', split='test', num_samples=num_samples, transform=transform)  
+    # Load the full dataset
+    full_dataset = LicensePlateDataset(image_dir='data', transform=transform)
 
-    # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=4, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=4)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=4)  
+    # Determine the total number of samples and calculate split sizes
+    num_samples = len(full_dataset)
+    train_size = int(0.8 * num_samples)
+    val_size = int(0.1 * num_samples)
+
+    # Split indices linearly
+    train_indices = list(range(0, train_size))
+    val_indices = list(range(train_size, train_size + val_size))
+    test_indices = list(range(train_size + val_size, num_samples))
+
+    # Create subset datasets for each split
+    train_dataset = Subset(full_dataset, train_indices)
+    val_dataset = Subset(full_dataset, val_indices)
+    test_dataset = Subset(full_dataset, test_indices)
+
+    # Create DataLoaders for each split
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+
+    # Print split sizes for confirmation
+    print(f"Total samples: {num_samples}")
+    print(f"Training samples: {len(train_indices)}")
+    print(f"Validation samples: {len(val_indices)}")
+    print(f"Test samples: {len(test_indices)}")
 
     # Initialize the model
     model = UNet(in_channels=3, out_channels=3).to(device)
     
     # Initialize both SSIM and MSE losses
-    mse_loss = nn.MSELoss()
-    ssim_loss = SSIM(data_range=1.0, size_average=True, channel=3)
+    criterion_mse = nn.MSELoss()
+    criterion_ssim = SSIM(data_range=1.0, size_average=True, channel=3)
     
     # Initialize the optimizer
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
@@ -128,10 +151,10 @@ def main():
 
             optimizer.zero_grad()
 
-            outputs = model(distorted_images)
+            generated_images = model(distorted_images)
            
             # Compute combined loss
-            loss = compute_loss(outputs, original_images, mse_loss, ssim_loss, ssim_mse_weight)
+            loss = compute_loss(generated_images, original_images, criterion_mse, criterion_ssim, ssim_mse_weight)
             
             loss.backward() 
             optimizer.step()
@@ -144,7 +167,7 @@ def main():
         print(f"Epoch [{epoch+1}/{num_epochs}], Training Loss: {epoch_loss:.4f}")
 
         # Validate the model
-        val_loss = evaluate_model(model, val_loader, mse_loss, ssim_loss, device, ssim_mse_weight, phase='Validation')
+        val_loss = evaluate_model(model, val_loader, criterion_mse, criterion_ssim, device, ssim_mse_weight, phase='Validation')
         val_losses.append(val_loss)
 
         # Early stopping logic
@@ -171,7 +194,7 @@ def main():
     model.load_state_dict(torch.load(checkpoint_path), weights_only=True)
 
     # After training is done, evaluate on the test set
-    test_loss = evaluate_model(model, test_loader, mse_loss, ssim_loss, device, ssim_mse_weight, phase='Test')
+    test_loss = evaluate_model(model, test_loader, criterion_mse, criterion_ssim, device, ssim_mse_weight, phase='Test')
     print(f"Test Loss: {test_loss:.4f}")
 
 if __name__ == "__main__":
