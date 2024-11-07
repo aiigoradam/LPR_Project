@@ -13,6 +13,7 @@ data/
 data_unique/
 plots/
 output_samples_pix2pix_1/
+mlruns/
 
 # Ignore model checkpoints
 models/*.h5
