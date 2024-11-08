@@ -44,12 +44,9 @@ def calculate_psnr(outputs, targets):
     return psnr.item()
 
 # Save sample images to MLflow
-def save_sample_images(model, dataloader, epoch, max_images=8):
+def save_sample_images(model, distorted_images, original_images, epoch, max_images=8):
     model.eval()
     with torch.no_grad():
-        batch = next(iter(dataloader))
-        distorted_images = batch['distorted'].to(device)
-        original_images = batch['original'].to(device)
         outputs = model(distorted_images)
 
         # Limit to max_images
@@ -122,6 +119,11 @@ def objective(trial, train_dataset, val_dataset, train_size, val_size, test_size
     criterion_mse = nn.MSELoss()
     criterion_ssim = SSIM(data_range=1.0, size_average=True, channel=3)
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+    
+    # Preload a sample batch from val_loader for logging and visualization
+    sample_batch = next(iter(val_loader))
+    sample_distorted_images = sample_batch['distorted'].to(device)
+    sample_original_images = sample_batch['original'].to(device)
     
     # Start MLflow run for this trial using trial ID
     with mlflow.start_run(run_name=f"Trial_{trial.number}"):
@@ -202,7 +204,7 @@ def objective(trial, train_dataset, val_dataset, train_size, val_size, test_size
 
             # Save sample images every 2 epochs
             if epoch % 2 == 0:
-                save_sample_images(model, val_loader, epoch)
+                save_sample_images(model, sample_distorted_images, sample_original_images, epoch)
 
             # Report validation loss to Optuna and prune if needed
             trial.report(val_loss, epoch)
@@ -228,15 +230,13 @@ def objective(trial, train_dataset, val_dataset, train_size, val_size, test_size
         # After training completes, log the best model
         if best_model_state is not None:
             model.load_state_dict(best_model_state)
-            # Prepare input_example and signature only once
-            val_iter = iter(val_loader)
-            example_batch = next(val_iter)
-            input_example = example_batch['distorted'][0].unsqueeze(0).to(device)
 
+            input_example = sample_distorted_images
+                 
             # Perform inference to get output example for signature
             model.eval()
             with torch.no_grad():
-                output_example = model(input_example)
+                output_example = model(sample_distorted_images)
 
             # Infer signature
             signature = infer_signature(
@@ -270,7 +270,7 @@ def main():
 
     # Load and split the dataset with fixed splits
     full_dataset = LicensePlateDataset(image_dir='data', transform=transform)
-    num_samples = int(len(full_dataset))
+    num_samples = int(len(full_dataset)/10)
     train_size = int(0.8 * num_samples)
     val_size = int(0.1 * num_samples)
     test_size = num_samples - train_size - val_size
