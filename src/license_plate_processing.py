@@ -15,9 +15,9 @@ def create_license_plate(width, height, text_size):
     Creates a license plate image with a random number.
 
     Args:
-        width (int, optional): The width of the license plate image. Defaults to 400.
-        height (int, optional): The height of the license plate image. Defaults to 100.
-        text_size (int, optional): The font size of the license plate number. Defaults to 90.
+        width (int, optional): The width of the license plate image. 
+        height (int, optional): The height of the license plate image. 
+        text_size (int, optional): The font size of the license plate number. 
 
     Returns:
         tuple: A tuple containing:
@@ -82,7 +82,7 @@ def warp_image(image, src_points, alpha, beta, f):
                                     Shape: (4, 2), format: [[x1, y1], [x2, y2], [x3, y3], [x4, y4]].
         alpha (float): Rotation angle around the y-axis (horizontal rotation), in degrees.
         beta (float): Rotation angle around the x-axis (vertical rotation), in degrees.
-        f (int, optional): Focal length, representing the distance from the camera to the image plane. Defaults to 400.
+        f (int, optional): Focal length, representing the distance from the camera to the image plane. 
 
     Returns:
         tuple: A tuple containing:
@@ -207,8 +207,8 @@ def add_gaussian_noise(image, dst_points, stddev):
     Args:
         image (numpy.ndarray): The input image in RGB format.
         dst_points (numpy.ndarray): The destination points (warped coordinates) of the license plate.
-        mean (float, optional): Mean of the Gaussian noise. Defaults to 0.
-        stddev (float, optional): Standard deviation of the Gaussian noise. Defaults to 30.
+        mean (float, optional): Mean of the Gaussian noise. 
+        stddev (float, optional): Standard deviation of the Gaussian noise. 
 
     Returns:
         numpy.ndarray: The image with added Gaussian noise in the L channel of the license plate region.
@@ -238,51 +238,42 @@ def add_gaussian_noise(image, dst_points, stddev):
 
 def manage_existing_data(output_dir, num_samples):
     """
-    Manages existing data in the output directory by deleting extra files if necessary.
-
+    Ensures that only the specified number of samples are present in the output directory by deleting extra files.
+    
     Args:
         output_dir (str): Directory where images and metadata are stored.
         num_samples (int): Number of new samples to generate.
     """
-    # Get lists of existing image and metadata files
-    original_images = sorted([f for f in os.listdir(output_dir) if f.startswith("original_") and f.endswith(".png")])
-    distorted_images = sorted([f for f in os.listdir(output_dir) if f.startswith("distorted_") and f.endswith(".png")])
-    metadata_files = sorted([f for f in os.listdir(output_dir) if f.startswith("metadata_") and f.endswith(".json")])
+    # Delete all existing files if they exceed the desired count
+    for filename in os.listdir(output_dir):
+        # Check if file is an original image, distorted image, or metadata file with an index beyond the current range
+        if (filename.startswith("original_") or filename.startswith("distorted_") or filename.startswith("metadata_")):
+            try:
+                # Extract the index from the filename
+                index = int(filename.split("_")[1].split(".")[0])
+                # Delete files with an index equal to or beyond `num_samples`
+                if index >= num_samples:
+                    os.remove(os.path.join(output_dir, filename))
+            except (IndexError, ValueError):
+                # If parsing fails, ignore the file
+                continue
 
-    # Determine the number of existing samples
-    existing_samples = min(len(original_images), len(distorted_images), len(metadata_files))
-
-    # Calculate the number of extra samples to delete
-    extra_samples = existing_samples - num_samples
-
-    if extra_samples > 0:
-        # Delete extra original images
-        for f in original_images[-extra_samples:]:
-            os.remove(os.path.join(output_dir, f))
-
-        # Delete extra distorted images
-        for f in distorted_images[-extra_samples:]:
-            os.remove(os.path.join(output_dir, f))
-
-        # Delete extra metadata files
-        for f in metadata_files[-extra_samples:]:
-            os.remove(os.path.join(output_dir, f))
 
 # =====================================
 # Dataset Generation with Cropping
 # =====================================
 
-def generate_dataset(num_samples, output_dir, alpha_ranges, noise_level_range, original_width, original_height, text_size, seed=None):
+def generate_dataset(num_samples, output_dir, noise_level_range, original_width, original_height, text_size, seed=None):
     """
     Generates and saves the dataset, including cropping of distorted images to original plate size.
     
     Args:
         num_samples (int): Number of image pairs to generate.
         output_dir (str): Directory to save generated images and metadata.
-        alpha_ranges (dict): Dictionary containing positive and negative alpha ranges.
         noise_level_range (tuple): Range of noise levels (mean, stddev) for random Gaussian noise.
         original_width (int): Original width of the license plate.
         original_height (int): Original height of the license plate.
+        text_size (int): Font size of the license plate number.
         seed (int): Random seed for reproducibility.
     """
     if seed is not None:
@@ -293,17 +284,35 @@ def generate_dataset(num_samples, output_dir, alpha_ranges, noise_level_range, o
     
     # Manage existing data before generating new data
     manage_existing_data(output_dir, num_samples)
-   
+    
     for idx in tqdm(range(num_samples), desc="Generating samples"):
         original_image_pil, src_points, plate_number = create_license_plate(original_width, original_height, text_size)
         original_image_rgb = np.array(original_image_pil)
 
-        # Randomly choose alpha from both positive and negative ranges
-        alpha = random.choice([
-            random.uniform(*alpha_ranges['negative']), 
-            random.uniform(*alpha_ranges['positive'])
-        ])
-        beta = 0  # Keeping beta (vertical rotation) fixed for now
+        # Decide randomly whether to select alpha or beta first
+        if random.random() < 0.5:
+            # Choose alpha first
+            alpha_choices = np.arange(80.0, 88.0 + 0.001, 0.2)
+            alpha = random.choice(alpha_choices)
+            # Calculate beta_max from alpha
+            beta_max = -5.0 * (alpha - 80.0) + 80.0
+            # Sample beta from [0, beta_max]
+            beta = random.uniform(0, beta_max)
+        else:
+            # Choose beta first
+            beta_choices = np.arange(80.0, 88.0 + 0.001, 0.2)
+            beta = random.choice(beta_choices)
+            # Calculate alpha_max from beta
+            alpha_max = -5.0 * (beta - 80.0) + 80.0
+            # Sample alpha from [0, alpha_max]
+            alpha = random.uniform(0, alpha_max)
+        
+        # Randomly flip signs to include negative angles
+        if random.random() < 0.5:
+            alpha = -alpha
+        if random.random() < 0.5:
+            beta = -beta
+
         noise_level = random.uniform(*noise_level_range)
 
         # Warp and add noise to the image
@@ -333,22 +342,18 @@ def generate_dataset(num_samples, output_dir, alpha_ranges, noise_level_range, o
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f)
 
+
 # =====================================
 # Main Function 
 # =====================================
 
 def main():
-    num_samples = 5000  # Number of images to generate for the dataset
-    unique_samples = 20  # Number of unique images to generate for experiments
+    num_samples = 6144 # Number of images to generate for the dataset
+    unique_samples = 32  # Number of unique images to generate for experiments
     output_dir = "data"  # Directory to save the dataset images
     unique_output_dir = "data_unique"  # Directory to save the unique experimental images
     seed = 42  # Random seed for reproducibility
     
-    # Define ranges for alpha (rotation angles) and noise levels
-    alpha_ranges = {
-        "negative": (-82, -87),  # Negative alpha range
-        "positive": (82, 87)     # Positive alpha range
-    }
     noise_level_range = (20, 250)  # Uniform noise levels 
     
     factor = 2  # Scaling factor for image size (0: 128x32, 1: 256x64, 2: 512x128, 3: 1024x256)
@@ -362,10 +367,10 @@ def main():
     text_size = int(25 * scale)  # Scaled text size
 
     # Generate the regular dataset
-    generate_dataset(num_samples, output_dir, alpha_ranges, noise_level_range, f, h, text_size, seed=seed)
+    generate_dataset(num_samples, output_dir, noise_level_range, f, h, text_size, seed=seed)
     
     # Generate unique images for experiments (not part of the dataset)
-    generate_dataset(unique_samples, unique_output_dir, alpha_ranges, noise_level_range, f, h, text_size, seed=seed+1)
+    generate_dataset(unique_samples, unique_output_dir, noise_level_range, f, h, text_size, seed=seed+1)
 
 if __name__ == "__main__":
     main()

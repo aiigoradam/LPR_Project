@@ -43,6 +43,14 @@ def calculate_psnr(outputs, targets):
     psnr = 10 * torch.log10(1 / mse)
     return psnr.item()
 
+# Unified pruning and logging helper function
+def handle_pruning(trial, epoch, mlflow_run, reason="validation loss"):
+    print(f"Pruning trial {trial.number} at epoch {epoch} due to {reason}.")
+    mlflow_run.set_tag("status", "pruned")
+    mlflow_run.log_metric("pruned_epoch", epoch)
+    mlflow_run.end_run(status="KILLED")
+    raise optuna.exceptions.TrialPruned()
+
 # Save sample images to MLflow
 def save_sample_images(model, distorted_images, original_images, epoch, max_images=8):
     model.eval()
@@ -65,7 +73,7 @@ def save_sample_images(model, distorted_images, original_images, epoch, max_imag
         # Save the combined grid as an image artifact
         combined_grid_cpu = combined_grid.cpu()
         img = transforms.ToPILImage()(combined_grid_cpu)
-        img_path = f"combined_epoch_{epoch}.png"
+        img_path = f"combined_epoch_{epoch:02}.png"
         img.save(img_path)
         mlflow.log_artifact(img_path)
         os.remove(img_path)  # Clean up after logging
@@ -105,10 +113,14 @@ def evaluate_model(model, dataloader, mse_loss_fn, ssim_loss_fn, ssim_mse_weight
 # Objective function for Optuna
 def objective(trial, train_dataset, val_dataset, train_size, val_size, test_size, seed):
     # Hyperparameters to tune
-    num_epochs = 3 
+    num_epochs = 50 
     batch_size = trial.suggest_categorical('batch_size', [4, 8, 16])
     learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True)
     ssim_mse_weight = trial.suggest_float('ssim_mse_weight', 0.0, 1.0)
+    
+    # Early stopping parameters
+    patience = 5
+    no_improvement_epochs = 0  # Counter for epochs with no improvement
 
     # DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
@@ -154,30 +166,33 @@ def objective(trial, train_dataset, val_dataset, train_size, val_size, test_size
             running_psnr = 0.0
             
             with tqdm(train_loader, desc=f"Trial {trial.number}, Epoch {epoch+1}/{num_epochs}", unit="batch") as tepoch:
-                for batch in tepoch:
-                    distorted_images = batch['distorted'].to(device)
-                    original_images = batch['original'].to(device)
+                try:
+                    for batch in tepoch:
+                        distorted_images = batch['distorted'].to(device)
+                        original_images = batch['original'].to(device)
 
-                    optimizer.zero_grad()
-                    outputs = model(distorted_images)
+                        optimizer.zero_grad()
+                        outputs = model(distorted_images)
 
-                    loss, mse_value, ssim_value = compute_loss(outputs, original_images, criterion_mse, criterion_ssim, ssim_mse_weight)
-                    psnr_value = calculate_psnr(outputs, original_images)
+                        loss, mse_value, ssim_value = compute_loss(outputs, original_images, criterion_mse, criterion_ssim, ssim_mse_weight)
+                        psnr_value = calculate_psnr(outputs, original_images)
 
-                    loss.backward()
-                    optimizer.step()
+                        loss.backward()
+                        optimizer.step()
 
-                    batch_size_actual = distorted_images.size(0)
-                    running_loss += loss.item() * batch_size_actual
-                    running_mse += mse_value * batch_size_actual
-                    running_ssim += ssim_value * batch_size_actual
-                    running_psnr += psnr_value * batch_size_actual
+                        batch_size_actual = distorted_images.size(0)
+                        running_loss += loss.item() * batch_size_actual
+                        running_mse += mse_value * batch_size_actual
+                        running_ssim += ssim_value * batch_size_actual
+                        running_psnr += psnr_value * batch_size_actual
 
-                    # Update tqdm description
-                    tepoch.set_postfix(
-                        loss=f"{loss.item():.3f}", mse=f"{mse_value:.3f}", ssim=f"{ssim_value:.3f}", psnr=f"{psnr_value:.3f}"
-                    )
-
+                        # Update tqdm description
+                        tepoch.set_postfix(
+                            loss=f"{loss.item():.3f}", mse=f"{mse_value:.4f}", ssim=f"{ssim_value:.3f}", psnr=f"{psnr_value:.2f}"
+                        )
+                except KeyboardInterrupt:
+                    handle_pruning(trial, epoch, mlflow.active_run(), reason="Keyboard Interrupt")
+                    
             # Average metrics for the epoch
             num_train_samples = len(train_loader.dataset)
             train_loss = running_loss / num_train_samples
@@ -209,23 +224,20 @@ def objective(trial, train_dataset, val_dataset, train_size, val_size, test_size
             # Report validation loss to Optuna and prune if needed
             trial.report(val_loss, epoch)
             if trial.should_prune():
-                # Log a message to indicate pruning in the console
-                print(f"Trial {trial.number} pruned at epoch {epoch} with val_loss {val_loss:.4f}")
-
-                # Tag the MLflow run to indicate pruning
-                mlflow.set_tag("status", "pruned")
-                mlflow.log_metric("pruned_epoch", epoch)  # Log the epoch at which it was pruned
-                
-                # End the MLflow run explicitly with a "KILLED" status to mark it as incomplete
-                mlflow.end_run(status="KILLED")
-                
-                # Raise the Optuna exception to stop the trial
-                raise optuna.exceptions.TrialPruned()
+                handle_pruning(trial, epoch, mlflow.active_run())
 
             # Save best model if validation loss improves
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_model_state = model.state_dict()  # Save the model's state_dict
+                no_improvement_epochs = 0  # Reset counter if there is an improvement
+            else:
+                no_improvement_epochs += 1  # Increment if no improvement in validation loss
+                
+            # Trigger early stopping if patience is exceeded
+            if no_improvement_epochs >= patience:
+                print(f"Early stopping triggered at epoch {epoch+1} for trial {trial.number}.")
+                break  # Stop training for this trial if early stopping criteria met
 
         # After training completes, log the best model
         if best_model_state is not None:
@@ -257,6 +269,7 @@ def objective(trial, train_dataset, val_dataset, train_size, val_size, test_size
 def main():
     # Experiment name
     experiment_name = "Unet_Optimization"
+    n_trials = 10
     seed = 42
     set_seed(seed)
     
@@ -270,10 +283,10 @@ def main():
 
     # Load and split the dataset with fixed splits
     full_dataset = LicensePlateDataset(image_dir='data', transform=transform)
-    num_samples = int(len(full_dataset)/10)
-    train_size = int(0.8 * num_samples)
-    val_size = int(0.1 * num_samples)
-    test_size = num_samples - train_size - val_size
+    num_samples = 6144 #int(len(full_dataset))
+    train_size = 4096 #int(0.8 * num_samples)
+    val_size = 1024 #int(0.1 * num_samples)
+    test_size = 1024 #num_samples - train_size - val_size
 
     # Linear split for reproducibility
     train_indices = list(range(0, train_size))
@@ -304,7 +317,7 @@ def main():
     # Resume study from where it left off
     study.optimize(
         lambda trial: objective(trial, train_dataset, val_dataset, train_size, val_size, test_size, seed),
-        n_trials=3  # Adjust n_trials as needed
+        n_trials=n_trials  
     )
 
     # Identify and log the best trial results
