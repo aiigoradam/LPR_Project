@@ -1,4 +1,5 @@
 import os
+os.environ["FOR_DISABLE_CONSOLE_CTRL_HANDLER"] = "1"  # Must be set before importing other libraries
 import sys
 import random
 import numpy as np
@@ -14,6 +15,10 @@ from tqdm import tqdm
 import optuna
 import mlflow
 from mlflow.models.signature import infer_signature
+import threading
+
+# Global flag
+stop_after_trial = threading.Event()
 
 # Add the parent directory of src (LPR_Project root) to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -44,11 +49,10 @@ def calculate_psnr(outputs, targets):
     return psnr.item()
 
 # Unified pruning and logging helper function
-def handle_pruning(trial, epoch, mlflow_run, reason="validation loss"):
+def handle_pruning(trial, epoch, reason="validation loss"):
     print(f"Pruning trial {trial.number} at epoch {epoch} due to {reason}.")
-    mlflow_run.set_tag("status", "pruned")
-    mlflow_run.log_metric("pruned_epoch", epoch)
-    mlflow_run.end_run(status="KILLED")
+    mlflow.set_tag("status", "pruned")
+    mlflow.end_run(status="KILLED")
     raise optuna.exceptions.TrialPruned()
 
 # Save sample images to MLflow
@@ -114,9 +118,9 @@ def evaluate_model(model, dataloader, mse_loss_fn, ssim_loss_fn, ssim_mse_weight
 def objective(trial, train_dataset, val_dataset, train_size, val_size, test_size, seed):
     # Hyperparameters to tune
     num_epochs = 50 
+    learning_rate = trial.suggest_categorical('learning_rate', np.around(np.linspace(1e-5, 1e-3, 50), decimals=5).tolist())
+    ssim_mse_weight = trial.suggest_categorical('ssim_mse_weight', np.around(np.linspace(0, 1.0, 50), decimals=2).tolist())
     batch_size = trial.suggest_categorical('batch_size', [4, 8, 16])
-    learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True)
-    ssim_mse_weight = trial.suggest_float('ssim_mse_weight', 0.0, 1.0)
     
     # Early stopping parameters
     patience = 5
@@ -188,11 +192,23 @@ def objective(trial, train_dataset, val_dataset, train_size, val_size, test_size
 
                         # Update tqdm description
                         tepoch.set_postfix(
-                            loss=f"{loss.item():.3f}", mse=f"{mse_value:.4f}", ssim=f"{ssim_value:.3f}", psnr=f"{psnr_value:.2f}"
+                            loss=f"{loss.item():.4f}", mse=f"{mse_value:.4f}", ssim=f"{ssim_value:.3f}", psnr=f"{psnr_value:.2f}"
                         )
                 except KeyboardInterrupt:
-                    handle_pruning(trial, epoch, mlflow.active_run(), reason="Keyboard Interrupt")
+                    print("\nInterrupt received. Options:")
+                    print("1. Prune the trial and stop the script.")
+                    print("2. Finish the trial and stop the script.")
                     
+                    choice = input("Select an option 1, 2, or Enter to continue: ")
+                    if choice == '1':
+                        stop_after_trial.set()
+                        handle_pruning(trial, epoch, reason="User-triggered pruning")
+                        
+                    elif choice == '2':
+                        print("Finishing the trial...")
+                        stop_after_trial.set()  
+                        continue  
+
             # Average metrics for the epoch
             num_train_samples = len(train_loader.dataset)
             train_loss = running_loss / num_train_samples
@@ -216,6 +232,8 @@ def objective(trial, train_dataset, val_dataset, train_size, val_size, test_size
                 'train_psnr': round(train_psnr, 2),
                 'val_psnr': round(val_psnr, 2)
             }, step=epoch)
+            
+            print(f"Epoch {epoch+1}/{num_epochs} - Val Loss: {val_loss:.4f}, Val MSE: {val_mse:.4f}, Val SSIM: {val_ssim:.4f}, Val PSNR: {val_psnr:.2f}")
 
             # Save sample images every 2 epochs
             if epoch % 2 == 0:
@@ -224,10 +242,11 @@ def objective(trial, train_dataset, val_dataset, train_size, val_size, test_size
             # Report validation loss to Optuna and prune if needed
             trial.report(val_loss, epoch)
             if trial.should_prune():
-                handle_pruning(trial, epoch, mlflow.active_run())
+                handle_pruning(trial, epoch)
 
             # Save best model if validation loss improves
-            if val_loss < best_val_loss:
+            min_delta = 0.0003  # Minimum change in validation loss to be considered an improvement
+            if val_loss < best_val_loss - min_delta:
                 best_val_loss = val_loss
                 best_model_state = model.state_dict()  # Save the model's state_dict
                 no_improvement_epochs = 0  # Reset counter if there is an improvement
@@ -237,6 +256,9 @@ def objective(trial, train_dataset, val_dataset, train_size, val_size, test_size
             # Trigger early stopping if patience is exceeded
             if no_improvement_epochs >= patience:
                 print(f"Early stopping triggered at epoch {epoch+1} for trial {trial.number}.")
+                # Log early stopping details to MLflow
+                mlflow.set_tag("early_stopped", f"epoch_{epoch + 1}")
+                mlflow.set_tag("best_val_loss", best_val_loss)
                 break  # Stop training for this trial if early stopping criteria met
 
         # After training completes, log the best model
@@ -313,12 +335,20 @@ def main():
         pruner=optuna.pruners.MedianPruner(),
         load_if_exists=True
     )
-    
-    # Resume study from where it left off
-    study.optimize(
-        lambda trial: objective(trial, train_dataset, val_dataset, train_size, val_size, test_size, seed),
-        n_trials=n_trials  
-    )
+   
+    for _ in range(n_trials):
+        if stop_after_trial.is_set():
+            print("Stopping the study after the current trial.")
+            break  # Stop the script before starting a new trial
+
+        study.optimize(
+            lambda trial: objective(trial, train_dataset, val_dataset, train_size, val_size, test_size, seed),
+            n_trials=1,  # Run one trial at a time to allow for checking the stop flag
+        )
+
+        if stop_after_trial.is_set():
+            print("Stopping the study after the current trial.")
+            break  # Exit the loop and end the script
 
     # Identify and log the best trial results
     best_trial = study.best_trial
