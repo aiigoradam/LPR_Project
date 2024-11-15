@@ -24,6 +24,7 @@ def create_license_plate(width, height, text_size):
             - image (PIL.Image): The generated license plate image.
             - corners (list of tuples): The corner coordinates of the license plate [(x1, y1), (x2, y1), (x3, y3), (x4, y4)].
             - plate_number (str): The generated plate number.
+            - bboxes (list of tuples): List of bounding boxes for each digit [(x, y, w, h), ...].
     """
     plate_number = " ".join([str(random.randint(0, 9)) for _ in range(6)])  # Generate a random plate number
     
@@ -63,10 +64,38 @@ def create_license_plate(width, height, text_size):
 
     # Paste the original image in the center
     new_image.paste(image, (x1, y1))
-    
+        
     plate_number = plate_number.replace(" ", "")  # Plate number without spaces for metadata
 
-    return new_image, corners, plate_number
+    # Convert PIL Image to numpy array
+    cv_image = np.array(new_image)
+    # Convert RGB to BGR for OpenCV
+    cv_image = cv2.cvtColor(cv_image, cv2.COLOR_RGB2BGR)
+
+    # Convert to grayscale
+    gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
+
+    # Crop the grayscale image to the license plate area
+    gray_plate = gray[y1:y2, x1:x2]
+
+    # Threshold the image to get binary image
+    _, thresh_plate = cv2.threshold(gray_plate, 100, 255, cv2.THRESH_BINARY_INV)
+
+    # Find contours
+    contours, _ = cv2.findContours(thresh_plate, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    bboxes = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        # Adjust x and y to original image coordinates
+        x += x1
+        y += y1
+        bboxes.append((x, y, w, h))
+
+    # Sort bounding boxes from left to right
+    bboxes = sorted(bboxes, key=lambda bbox: bbox[0])
+
+    return new_image, corners, plate_number, bboxes
 
 # =====================================
 # Image Warping and Dewarping
@@ -286,7 +315,7 @@ def generate_dataset(num_samples, output_dir, noise_level_range, original_width,
     manage_existing_data(output_dir, num_samples)
     
     for idx in tqdm(range(num_samples), desc="Generating samples"):
-        original_image_pil, src_points, plate_number = create_license_plate(original_width, original_height, text_size)
+        original_image_pil, src_points, plate_number, digit_bboxes = create_license_plate(original_width, original_height, text_size)
         original_image_rgb = np.array(original_image_pil)
 
         # Decide randomly whether to select alpha or beta first
@@ -336,13 +365,13 @@ def generate_dataset(num_samples, output_dir, noise_level_range, original_width,
             "plate_number": plate_number,
             "alpha": alpha,
             "beta": beta,
-            "noise_level": noise_level
+            "noise_level": noise_level,
+            "digit_bboxes": digit_bboxes
         }
         metadata_path = os.path.join(output_dir, f"metadata_{idx}.json")
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f)
-
-
+               
 # =====================================
 # Main Function 
 # =====================================

@@ -4,19 +4,6 @@ import torch.nn as nn
 class DoubleConv(nn.Module):
     """
     Double convolution block with Batch Normalization and ReLU activation.
-
-    Consists of two consecutive 3x3 convolutional layers, each followed by 
-    batch normalization and ReLU activation.
-
-    Parameters:
-    - `in_channels` (int): Number of input channels.
-    - `out_channels` (int): Number of output channels.
-
-    Input:
-    - Tensor of shape (in_channels, H, W).
-
-    Output:
-    - Tensor of shape (out_channels, H, W).
     """
     def __init__(self, in_channels, out_channels):
         super(DoubleConv, self).__init__()
@@ -36,29 +23,6 @@ class DoubleConv(nn.Module):
 class UNet(nn.Module):
     """
     The U-Net architecture with encoder and decoder paths with skip connections.
-    
-    - **4 Encoder Layers**: Each with two 3x3 convolutions + ReLU and a 2x2 max-pooling 
-      to reduce spatial size, progressively increasing feature depth.
-    
-    - **Bottleneck Layer**: The deepest part, aggregating high-level features.
-
-    - **4 Decoder Layers**: Each upsamples, concatenates skip connections from the 
-      encoder, and applies two 3x3 convolutions to reconstruct spatial detail.
-
-    - **Skip Connections**: Links encoder and decoder layers, aiding detail recovery.
-
-    - **Final Layer**: 1x1 convolution to match output channels.
-
-    Parameters:
-    - `in_channels` (int): Number of input channels.
-    - `out_channels` (int): Number of output channels.
-    - `init_features` (int): Starting number of feature maps (doubles at each encoder layer).
-
-    Input:
-    - Tensor of shape (in_channels, H, W), where H and W should be divisible by 16.
-
-    Output:
-    - Tensor of shape (out_channels, H, W).
     """
     def __init__(self, in_channels=3, out_channels=3, features=64):
         super(UNet, self).__init__()
