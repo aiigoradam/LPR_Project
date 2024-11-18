@@ -15,6 +15,7 @@ from tqdm import tqdm
 import optuna
 import mlflow
 from mlflow.models.signature import infer_signature
+
 import threading
 
 # Global flag
@@ -32,19 +33,17 @@ from license_plate_dataset import LicensePlateDataset
 # =====================================
 
 config = {
-    'experiment_name': 'Unet_Optimization_Test.db',
-    'n_trials': 50,
+    'experiment_name': 'Unet_Optimization_fixedWeights',
+    'n_trials': 40,
     'seed': 42,
-    'num_epochs': 50,
-    'patience': 5,
+    'num_epochs': 40,
     'train_size': 4096,
     'val_size': 1024,
-    'test_size': 1024,
-    'batch_sizes': [4, 8, 16], 
-    'learning_rate_range': (1e-5, 1e-3),
-    'weight_decay_range': (1e-5, 1e-3),
+    'batch_sizes': [4, 8], 
+    'learning_rate_range': (1e-4, 1e-2),  # 0.0001 to 0.01
+    'weight_decay_range': (1e-5, 1e-4),   # 0.00001 to 0.0001
     'transform': transforms.Compose([transforms.ToTensor()]),
-    'storage_url': f"sqlite:///{os.path.abspath('optuna_study_W_test.db.db')}",
+    'storage_url': f"sqlite:///{os.path.abspath('optuna_study_fixedWeights.db')}",
     'pruner': optuna.pruners.MedianPruner(),
 }
 
@@ -133,19 +132,16 @@ def evaluate_model(model, dataloader, criterion):
     return avg_loss, avg_mse, avg_ssim, avg_psnr
 
 # =====================================
-# Multi-Loss Class with Uncertainty Weighting
+# Multi-Loss Class 
 # =====================================
 
 class MultiLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, mse_weight=1.0, ssim_weight=0.0):
         super(MultiLoss, self).__init__()
-        # Initialize log variances (uncertainties) as learnable parameters
-        self.log_sigma_mse = nn.Parameter(torch.zeros(1))
-        self.log_sigma_ssim = nn.Parameter(torch.zeros(1))
         self.mse_loss_fn = nn.MSELoss()
         self.ssim_loss_fn = SSIM(data_range=1.0, size_average=True, channel=3)
-        self.mse_weight = None
-        self.ssim_weight = None
+        self.mse_weight = mse_weight
+        self.ssim_weight = ssim_weight
     
     def forward(self, outputs, targets):
         # Calculate individual losses
@@ -153,14 +149,9 @@ class MultiLoss(nn.Module):
         ssim_value = self.ssim_loss_fn(outputs, targets)
         ssim_loss = 1 - ssim_value  # Convert SSIM score to SSIM loss
         
-        self.mse_weight = torch.exp(-self.log_sigma_mse)
-        self.ssim_weight = torch.exp(-self.log_sigma_ssim)
-        
-        # Calculate combined loss using uncertainty-based weighting
-        loss = self.mse_weight * mse_loss + self.ssim_weight * ssim_loss # Emitted log(sigma) terms since they make loss negative
+        loss = self.mse_weight * mse_loss + self.ssim_weight * ssim_loss
 
         return loss, mse_loss.item(), ssim_value.item()
-
 
 # =====================================
 # Objective Function for Optuna
@@ -172,10 +163,6 @@ def objective(trial):
     learning_rate = trial.suggest_float('learning_rate', *config['learning_rate_range'], log=True)
     weight_decay = trial.suggest_float('weight_decay', *config['weight_decay_range'], log=True)
     batch_size = trial.suggest_categorical('batch_size', config['batch_sizes'])
-    
-    # Early stopping parameters
-    patience = config['patience']
-    no_improvement_epochs = 0  # Counter for epochs with no improvement
 
     # DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
@@ -183,14 +170,13 @@ def objective(trial):
 
     # Initialize model and loss function
     model = UNet(in_channels=3, out_channels=3).to(device)
-    criterion = MultiLoss().to(device)
+    criterion = MultiLoss(mse_weight=1.0, ssim_weight=0.0).to(device)
     
     # Include uncertainties in optimizer parameters
-    optimizer = optim.AdamW(
-        list(model.parameters()) + list(criterion.parameters()), 
-        lr=learning_rate, 
-        weight_decay=weight_decay
-    )
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    
+    # Learning rate scheduler
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
     
     # Preload a sample batch from val_loader for logging and visualization
     sample_batch = next(iter(val_loader))
@@ -205,7 +191,6 @@ def objective(trial):
             'weight_decay': weight_decay,
             'train_size': config['train_size'],
             'val_size': config['val_size'],
-            'test_size': config['test_size'],
             'seed': config['seed']
         })
 
@@ -265,21 +250,30 @@ def objective(trial):
             # Validation
             val_loss, val_mse, val_ssim, val_psnr = evaluate_model(model, val_loader, criterion)
             
+            # Step the scheduler
+            scheduler.step(val_loss)
+            
+            # Log and print the current learning rate
+            current_lr = scheduler.get_last_lr()[0]
+  
             # Log training and validation metrics to MLflow
             mlflow.log_metrics({
-                'train_loss': round(train_loss, 4),
-                'val_loss': round(val_loss, 4),
-                'train_mse': round(train_mse, 4),
-                'val_mse': round(val_mse, 4),
-                'train_ssim': round(train_ssim, 4),
-                'val_ssim': round(val_ssim, 4),
-                'train_psnr': round(train_psnr, 2),
-                'val_psnr': round(val_psnr, 2),
-                'mse_weight': round(criterion.mse_weight.item(), 4),
-                'ssim_weight': round(criterion.ssim_weight.item(), 4),
+                'train_loss':   round(train_loss, 5),
+                'train_mse':    round(train_mse, 5), 
+                'train_ssim':   round(train_ssim, 4),
+                'train_psnr':   round(train_psnr, 2),
+                'val_loss':     round(val_loss, 4),
+                'val_mse':      round(val_mse, 4),
+                'val_ssim':     round(val_ssim, 4),
+                'val_psnr':     round(val_psnr, 2),
+                'current_learning_rate': current_lr
             }, step=epoch)
             
-            print(f"          Epoch {epoch+1}/{num_epochs}:       Val Loss: {val_loss:.4f}, Val MSE: {val_mse:.5f}, Val SSIM: {val_ssim:.4f}, Val PSNR: {val_psnr:.2f}")
+            print(
+                f"          Epoch {epoch+1}/{num_epochs}:      Val Loss: {val_loss:.4f}, "
+                f"Val MSE: {val_mse:.5f}, Val SSIM: {val_ssim:.4f}, Val PSNR: {val_psnr:.2f}, "
+                f"Current lr: {current_lr:.6f}"
+            )
 
             # Save sample images every 2 epochs
             if epoch % 2 == 0:
@@ -289,24 +283,12 @@ def objective(trial):
             trial.report(val_loss, epoch)
             if trial.should_prune():
                 handle_pruning(trial, epoch)
-
+                            
             # Save best model if validation loss improves
-            min_delta = 0.0003  # Minimum change in validation loss to be considered an improvement
-            if val_loss < best_val_loss - min_delta:
+            if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                best_model_state = model.state_dict()  # Save the model's state_dict
-                no_improvement_epochs = 0  # Reset counter if there is an improvement
-            else:
-                no_improvement_epochs += 1  # Increment if no improvement in validation loss
-                
-            # Trigger early stopping if patience is exceeded 
-            if no_improvement_epochs >= patience:
-                print(f"Early stopping triggered at epoch {epoch+1} for trial {trial.number}.")
-                # Log early stopping details to MLflow
-                mlflow.set_tag("early_stopped", f"epoch_{epoch + 1}")
-                mlflow.set_tag("best_val_loss", best_val_loss)
-                break  # Stop training for this trial if early stopping criteria met
-
+                best_model_state = model.state_dict()
+        
         # After training completes, log the best model
         if best_model_state is not None:
             model.load_state_dict(best_model_state)
@@ -352,21 +334,18 @@ def main():
     full_dataset = LicensePlateDataset(image_dir='data', transform=transform)
     train_size = config['train_size']
     val_size = config['val_size']
-    test_size = config['test_size']
 
     # Linear split for reproducibility
     train_indices = list(range(0, train_size))
     val_indices = list(range(train_size, train_size + val_size))
-    # test_indices = list(range(train_size + val_size, train_size + val_size + test_size))
 
     # Create subset datasets for each split
     global train_dataset, val_dataset
     train_dataset = Subset(full_dataset, train_indices)
     val_dataset = Subset(full_dataset, val_indices)
-    # test_dataset = Subset(full_dataset, test_indices)
    
     # Print split sizes for confirmation
-    print(f"Training samples: {train_size}, Validation samples: {val_size}, Test samples: {test_size}")
+    print(f"Training samples: {train_size}, Validation samples: {val_size}")
     
     # Set the MLflow experiment
     mlflow.set_experiment(config['experiment_name'])

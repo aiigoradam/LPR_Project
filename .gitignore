@@ -11,6 +11,7 @@ __pycache__/
 # Folders
 data/
 data_unique/
+data_test/
 plots/
 output_samples_pix2pix_1/
 mlruns/

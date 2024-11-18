@@ -19,6 +19,52 @@ class DoubleConv(nn.Module):
     def forward(self, x):
         return self.double_conv(x)
 
+class Down(nn.Module):
+    """
+    Downscaling with maxpool then double conv
+    """
+    def __init__(self, in_channels, out_channels):
+        super(Down, self).__init__()
+        self.maxpool_conv = nn.Sequential(
+            nn.MaxPool2d(2),
+            DoubleConv(in_channels, out_channels)
+        )
+
+    def forward(self, x):
+        return self.maxpool_conv(x)
+
+class Up(nn.Module):
+    """
+    Upscaling then double conv
+    """
+    def __init__(self, in_channels, out_channels):
+        super(Up, self).__init__()
+        self.upconv = nn.ConvTranspose2d(in_channels , out_channels, kernel_size=2, stride=2)
+        self.conv = DoubleConv(in_channels, out_channels)
+
+    def forward(self, x1, x2):
+        x1 = self.upconv(x1)
+
+        # Handle padding issues if input sizes are different
+        diffY = x2.size()[2] - x1.size()[2]
+        diffX = x2.size()[3] - x1.size()[3]
+
+        x1 = nn.functional.pad(x1, [diffX // 2, diffX - diffX //2,
+                                    diffY //2, diffY - diffY //2])
+
+        x = torch.cat([x2, x1], dim=1)
+        return self.conv(x)
+
+class OutConv(nn.Module):
+    """
+    Final output convolution layer
+    """
+    def __init__(self, in_channels, out_channels):
+        super(OutConv, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        return self.conv(x)
 
 class UNet(nn.Module):
     """
@@ -26,58 +72,31 @@ class UNet(nn.Module):
     """
     def __init__(self, in_channels=3, out_channels=3, features=64):
         super(UNet, self).__init__()
-        # Encoder
-        self.encoder1 = DoubleConv(in_channels, features)            # Input: 3 x 128 x 512, Output: features x 128 x 512
-        self.pool1    = nn.MaxPool2d(kernel_size=2, stride=2)        # Downsample: features x 128 x 512 -> features x 64 x 256
-        self.encoder2 = DoubleConv(features, features * 2)           # Input: features x 64 x 256, Output: (features*2) x 64 x 256
-        self.pool2    = nn.MaxPool2d(kernel_size=2, stride=2)        # Downsample: (features*2) x 64 x 256 -> (features*2) x 32 x 128
-        self.encoder3 = DoubleConv(features * 2, features * 4)       # Input: (features*2) x 32 x 128, Output: (features*4) x 32 x 128
-        self.pool3    = nn.MaxPool2d(kernel_size=2, stride=2)        # Downsample: (features*4) x 32 x 128 -> (features*4) x 16 x 64
-        self.encoder4 = DoubleConv(features * 4, features * 8)       # Input: (features*4) x 16 x 64, Output: (features*8) x 16 x 64
-        self.pool4    = nn.MaxPool2d(kernel_size=2, stride=2)        # Downsample: (features*8) x 16 x 64 -> (features*8) x 8 x 32
+        self.in_conv = DoubleConv(in_channels, features)
+        self.down1 = Down(features, features * 2)
+        self.down2 = Down(features * 2, features * 4)
+        self.down3 = Down(features * 4, features * 8)
+        self.down4 = Down(features * 8, features * 16)
 
-        # Bottleneck
-        self.bottleneck = DoubleConv(features * 8, features * 16)    # Input: (features*8) x 8 x 32, Output: (features*16) x 8 x 32
+        self.up1 = Up(features * 16, features * 8)
+        self.up2 = Up(features * 8, features * 4)
+        self.up3 = Up(features * 4, features * 2)
+        self.up4 = Up(features * 2, features)
 
-        # Decoder
-        self.upconv4  = nn.ConvTranspose2d(features * 16, features * 8, kernel_size=2, stride=2)    # Upsample: (features*16) x 8 x 32 -> (features*8) x 16 x 64
-        self.decoder4 = DoubleConv((features * 8) * 2, features * 8)                                # Input: (features*16) x 16 x 64, Output: (features*8) x 16 x 64
-        self.upconv3  = nn.ConvTranspose2d(features * 8, features * 4, kernel_size=2, stride=2)     # Upsample: (features*8) x 16 x 64 -> (features*4) x 32 x 128
-        self.decoder3 = DoubleConv((features * 4) * 2, features * 4)                                # Input: (features*8) x 32 x 128, Output: (features*4) x 32 x 128
-        self.upconv2  = nn.ConvTranspose2d(features * 4, features * 2, kernel_size=2, stride=2)     # Upsample: (features*4) x 32 x 128 -> (features*2) x 64 x 256
-        self.decoder2 = DoubleConv((features * 2) * 2, features * 2)                                # Input: (features*4) x 64 x 256, Output: (features*2) x 64 x 256
-        self.upconv1  = nn.ConvTranspose2d(features * 2, features, kernel_size=2, stride=2)         # Upsample: (features*2) x 64 x 256 -> features x 128 x 512
-        self.decoder1 = DoubleConv(features * 2, features)                                          # Input: (features*2) x 128 x 512, Output: features x 128 x 512
-
-        # Final output layer
-        self.conv = nn.Conv2d(in_channels=features, out_channels=out_channels, kernel_size=1)  # Output: out_channels x 128 x 512
+        self.out_conv = OutConv(features, out_channels)
 
     def forward(self, x):
-        # Encoder path
-        enc1 = self.encoder1(x)                          # features x 128 x 512
-        enc2 = self.encoder2(self.pool1(enc1))           # (features*2) x 64 x 256
-        enc3 = self.encoder3(self.pool2(enc2))           # (features*4) x 32 x 128
-        enc4 = self.encoder4(self.pool3(enc3))           # (features*8) x 16 x 64
+        x1 = self.in_conv(x)
+        
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4) 
 
-        # Bottleneck
-        bottleneck = self.bottleneck(self.pool4(enc4))   # (features*16) x 8 x 32
+        x = self.up1(x5, x4)
+        x = self.up2(x,  x3)
+        x = self.up3(x,  x2)
+        x = self.up4(x,  x1)
 
-        # Decoder path
-        dec4 = self.upconv4(bottleneck)                  # (features*8) x 16 x 64
-        dec4 = torch.cat((dec4, enc4), dim=1)            # Concatenate with encoder4: (features*16) x 16 x 64
-        dec4 = self.decoder4(dec4)                       # (features*8) x 16 x 64
-
-        dec3 = self.upconv3(dec4)                        # (features*4) x 32 x 128
-        dec3 = torch.cat((dec3, enc3), dim=1)            # Concatenate with encoder3: (features*8) x 32 x 128
-        dec3 = self.decoder3(dec3)                       # (features*4) x 32 x 128
-
-        dec2 = self.upconv2(dec3)                        # (features*2) x 64 x 256
-        dec2 = torch.cat((dec2, enc2), dim=1)            # Concatenate with encoder2: (features*4) x 64 x 256
-        dec2 = self.decoder2(dec2)                       # (features*2) x 64 x 256
-
-        dec1 = self.upconv1(dec2)                        # features x 128 x 512
-        dec1 = torch.cat((dec1, enc1), dim=1)            # Concatenate with encoder1: (features*2) x 128 x 512
-        dec1 = self.decoder1(dec1)                       # features x 128 x 512
-
-        # Output layer
-        return self.conv(dec1)                           # Output: out_channels x 128 x 512
+        x = self.out_conv(x)
+        return x

@@ -377,16 +377,18 @@ def generate_dataset(num_samples, output_dir, noise_level_range, original_width,
 # =====================================
 
 def main():
-    num_samples = 6144 # Number of images to generate for the dataset
+    num_samples = 5120  # Number of training images to generate for the dataset
+    test_samples = 1024  # Number of test images to generate
     unique_samples = 32  # Number of unique images to generate for experiments
     output_dir = "data"  # Directory to save the dataset images
+    test_output_dir = "data_test"  # Directory to save the test dataset images
     unique_output_dir = "data_unique"  # Directory to save the unique experimental images
     seed = 42  # Random seed for reproducibility
-    
+
     noise_level_range = (20, 250)  # Uniform noise levels 
-    
+
     factor = 2  # Scaling factor for image size (0: 128x32, 1: 256x64, 2: 512x128, 3: 1024x256)
-    
+
     # Calculate the scaling multiplier
     scale = 2 ** factor
 
@@ -395,10 +397,13 @@ def main():
     h = int(32 * scale)          # Scaled height
     text_size = int(25 * scale)  # Scaled text size
 
-    # Generate the regular dataset
+    # Generate the training dataset
     generate_dataset(num_samples, output_dir, noise_level_range, f, h, text_size, seed=seed)
     
-    # Generate unique images for experiments (not part of the dataset)
+    # Generate the test dataset
+    generate_dataset(test_samples, test_output_dir, noise_level_range, f, h, text_size, seed=seed+2)
+    
+    # Keep the unique dataset for experiments
     generate_dataset(unique_samples, unique_output_dir, noise_level_range, f, h, text_size, seed=seed+1)
 
 if __name__ == "__main__":
