@@ -1,21 +1,14 @@
+# train_unet.py
 import os
-os.environ["FOR_DISABLE_CONSOLE_CTRL_HANDLER"] = "1"  # Must be set before importing other libraries
 import sys
-import random
-import numpy as np
 import torch
-import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
-from pytorch_msssim import SSIM
-import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Subset
-from torchvision.utils import make_grid
+from torchvision import transforms
 from tqdm import tqdm
 import optuna
 import mlflow
 from mlflow.models.signature import infer_signature
-
 import threading
 
 # Global flag
@@ -25,45 +18,32 @@ stop_after_trial = threading.Event()
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from models.unet import UNet
-from license_plate_dataset import LicensePlateDataset
+from lp_dataset import LicensePlateDataset
 
+from utils import set_seed, calculate_psnr, save_sample_images, evaluate_model, MultiLoss
 
 # =====================================
 # Configuration Dictionary
 # =====================================
 
 config = {
-    'experiment_name': 'Unet_Optimization_fixedWeights',
+    'experiment_name': 'Unet_Optimization_MSEloss',
     'n_trials': 40,
     'seed': 42,
     'num_epochs': 40,
     'train_size': 4096,
     'val_size': 1024,
     'batch_sizes': [4, 8], 
-    'learning_rate_range': (1e-4, 1e-2),  # 0.0001 to 0.01
-    'weight_decay_range': (1e-5, 1e-4),   # 0.00001 to 0.0001
+    'learning_rate_range': (1e-4, 1e-3), # from 0.0001 to 0.001
+    'weight_decay_range': (5e-6, 5e-5),  # from 0.000005 to 0.00005 
     'transform': transforms.Compose([transforms.ToTensor()]),
-    'storage_url': f"sqlite:///{os.path.abspath('optuna_study_fixedWeights.db')}",
+    'storage_url': f"sqlite:///{os.path.abspath('optuna_study_MSEloss.db')}",
     'pruner': optuna.pruners.MedianPruner(),
 }
 
 # =====================================
-# Helper Functions and Classes
+# Helper Functions
 # =====================================
-
-# Set seed for reproducibility
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-# Calculate PSNR
-def calculate_psnr(outputs, targets):
-    mse = F.mse_loss(outputs, targets)
-    psnr = 10 * torch.log10(1 / mse)
-    return psnr.item()
 
 # Unified pruning and logging helper function
 def handle_pruning(trial, epoch):
@@ -71,87 +51,6 @@ def handle_pruning(trial, epoch):
     mlflow.set_tag("status", "pruned")
     mlflow.end_run(status="KILLED")
     raise optuna.exceptions.TrialPruned()
-
-# Save sample images to MLflow
-def save_sample_images(model, distorted_images, original_images, epoch, max_images=8):
-    model.eval()
-    with torch.no_grad():
-        outputs = model(distorted_images)
-
-        # Limit to max_images
-        distorted_images = distorted_images[:max_images]
-        original_images = original_images[:max_images]
-        outputs = outputs[:max_images]
-
-        # Convert images to make_grid format and save
-        distorted_grid = make_grid(distorted_images, nrow=max_images, normalize=True, scale_each=True)
-        original_grid = make_grid(original_images, nrow=max_images, normalize=True, scale_each=True)
-        output_grid = make_grid(outputs, nrow=max_images, normalize=True, scale_each=True)
-        
-        # Concatenate the grids into a single grid (dim=1 for vertical concatenation)
-        combined_grid = torch.cat([distorted_grid, original_grid, output_grid], dim=1)
-        
-        # Save the combined grid as an image artifact
-        combined_grid_cpu = combined_grid.cpu()
-        img = transforms.ToPILImage()(combined_grid_cpu)
-        img_path = f"combined_epoch_{epoch:02}.png"
-        img.save(img_path)
-        mlflow.log_artifact(img_path)
-        os.remove(img_path)  # Clean up after logging
-    model.train()
-
-# Evaluate model on validation or test set
-def evaluate_model(model, dataloader, criterion):
-    model.eval()
-    total_loss = 0.0
-    total_mse = 0.0
-    total_ssim = 0.0
-    total_psnr = 0.0
-    with torch.no_grad():
-        for batch in dataloader:
-            distorted_images = batch['distorted'].to(device)
-            original_images = batch['original'].to(device)
-
-            outputs = model(distorted_images)
-
-            loss, mse_value, ssim_value = criterion(outputs, original_images)
-            psnr_value = calculate_psnr(outputs, original_images)
-
-            batch_size = distorted_images.size(0)
-            total_loss += loss.item() * batch_size
-            total_mse += mse_value * batch_size
-            total_ssim += ssim_value * batch_size
-            total_psnr += psnr_value * batch_size
-
-    num_samples = len(dataloader.dataset)
-    avg_loss = total_loss / num_samples
-    avg_mse = total_mse / num_samples
-    avg_ssim = total_ssim / num_samples
-    avg_psnr = total_psnr / num_samples
-
-    return avg_loss, avg_mse, avg_ssim, avg_psnr
-
-# =====================================
-# Multi-Loss Class 
-# =====================================
-
-class MultiLoss(nn.Module):
-    def __init__(self, mse_weight=1.0, ssim_weight=0.0):
-        super(MultiLoss, self).__init__()
-        self.mse_loss_fn = nn.MSELoss()
-        self.ssim_loss_fn = SSIM(data_range=1.0, size_average=True, channel=3)
-        self.mse_weight = mse_weight
-        self.ssim_weight = ssim_weight
-    
-    def forward(self, outputs, targets):
-        # Calculate individual losses
-        mse_loss = self.mse_loss_fn(outputs, targets)
-        ssim_value = self.ssim_loss_fn(outputs, targets)
-        ssim_loss = 1 - ssim_value  # Convert SSIM score to SSIM loss
-        
-        loss = self.mse_weight * mse_loss + self.ssim_weight * ssim_loss
-
-        return loss, mse_loss.item(), ssim_value.item()
 
 # =====================================
 # Objective Function for Optuna
@@ -172,11 +71,9 @@ def objective(trial):
     model = UNet(in_channels=3, out_channels=3).to(device)
     criterion = MultiLoss(mse_weight=1.0, ssim_weight=0.0).to(device)
     
-    # Include uncertainties in optimizer parameters
+    # Optimizer and scheduler
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    
-    # Learning rate scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
     
     # Preload a sample batch from val_loader for logging and visualization
     sample_batch = next(iter(val_loader))
@@ -248,7 +145,7 @@ def objective(trial):
             train_psnr = running_psnr / num_train_samples
             
             # Validation
-            val_loss, val_mse, val_ssim, val_psnr = evaluate_model(model, val_loader, criterion)
+            val_loss, val_mse, val_ssim, val_psnr = evaluate_model(model, val_loader, criterion, device)
             
             # Step the scheduler
             scheduler.step(val_loss)
@@ -277,7 +174,7 @@ def objective(trial):
 
             # Save sample images every 2 epochs
             if epoch % 2 == 0:
-                save_sample_images(model, sample_distorted_images, sample_original_images, epoch)
+                save_sample_images(model, sample_distorted_images, sample_original_images, epoch, mlflow)
 
             # Report validation loss to Optuna and prune if needed
             trial.report(val_loss, epoch)

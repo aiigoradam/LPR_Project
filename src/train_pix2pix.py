@@ -14,7 +14,7 @@ from pytorch_msssim import SSIM  # Import for SSIM
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from models.pix2pix import UNetGenerator, PatchGANDiscriminator
-from license_plate_dataset import LicensePlateDataset
+from lp_dataset import LicensePlateDataset
 
 def set_seed(seed):
     random.seed(seed)

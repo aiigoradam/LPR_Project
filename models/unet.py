@@ -39,19 +39,11 @@ class Up(nn.Module):
     """
     def __init__(self, in_channels, out_channels):
         super(Up, self).__init__()
-        self.upconv = nn.ConvTranspose2d(in_channels , out_channels, kernel_size=2, stride=2)
+        self.upconv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2)
         self.conv = DoubleConv(in_channels, out_channels)
 
     def forward(self, x1, x2):
         x1 = self.upconv(x1)
-
-        # Handle padding issues if input sizes are different
-        diffY = x2.size()[2] - x1.size()[2]
-        diffX = x2.size()[3] - x1.size()[3]
-
-        x1 = nn.functional.pad(x1, [diffX // 2, diffX - diffX //2,
-                                    diffY //2, diffY - diffY //2])
-
         x = torch.cat([x2, x1], dim=1)
         return self.conv(x)
 
