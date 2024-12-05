@@ -370,6 +370,115 @@ def generate_dataset(num_samples, output_dir, noise_level_range, original_width,
         metadata_path = os.path.join(output_dir, f"metadata_{idx}.json")
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f)
+
+
+def generate_test_dataset_custom(output_dir, original_width, original_height, text_size, seed=None):
+    """
+    Generates a test dataset focusing on the upper-right rectangle of the angle range:
+    - Scenario 1:
+        Alpha in [80..89]
+        Beta in [0..89]
+    - Scenario 2:
+        Beta in [80..89]
+        Alpha in [0..79]  (to avoid duplication of the intersection with scenario 1)
+    
+    For each alpha, beta pair, creates two images:
+        1) Moderate noise: stddev in [0..100]
+        2) High noise: stddev in [101..200]
+    
+    This ensures an even distribution across the specified angle ranges without duplicating the intersection region.
+    """
+
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Define angle ranges
+    alpha_high_range = range(80, 90)  # 80 to 89 inclusive
+    beta_full_range = range(0, 90)    # 0 to 89 inclusive
+    beta_high_range = range(80, 90)
+    alpha_partial_range = range(0, 80)  # 0 to 79 inclusive
+
+    # We'll collect parameter combinations here
+    parameter_combinations = []
+
+    # Scenario 1: alpha in [80..89], beta in [0..89]
+    for alpha in alpha_high_range:
+        for beta in beta_full_range:
+            parameter_combinations.append((alpha, beta))
+
+    # Scenario 2: beta in [80..89], alpha in [0..79]
+    for beta in beta_high_range:
+        for alpha in alpha_partial_range:
+            parameter_combinations.append((alpha, beta))
+
+    # Now we have a set of (alpha, beta) pairs that cover:
+    # - The full "high alpha" with full beta range scenario
+    # - The full "high beta" with partial alpha range scenario (avoiding duplication of the intersection)
+
+    idx = 0
+    for alpha, beta in tqdm(parameter_combinations, desc="Generating test dataset"):
+        # Create the license plate
+        original_image_pil, src_points, plate_number, digit_bboxes = create_license_plate(original_width, original_height, text_size)
+        original_image_rgb = np.array(original_image_pil)
+
+        # Warp the image
+        warped_image, dst_points = warp_image(original_image_rgb, np.array(src_points), alpha, beta, f=original_width)
+
+        # We'll generate two samples: one moderate noise and one high noise
+        # Moderate noise
+        noise_level_moderate = random.uniform(0, 100)
+        noisy_image_moderate = add_gaussian_noise(warped_image, dst_points, stddev=noise_level_moderate)
+        distorted_image_moderate = dewarp_image(noisy_image_moderate, src_points, dst_points)
+        cropped_original_image = crop_to_original_size(original_image_rgb, original_width, original_height)
+        cropped_distorted_moderate = crop_to_original_size(distorted_image_moderate, original_width, original_height)
+
+        # High noise
+        noise_level_high = random.uniform(101, 200)
+        noisy_image_high = add_gaussian_noise(warped_image, dst_points, stddev=noise_level_high)
+        distorted_image_high = dewarp_image(noisy_image_high, src_points, dst_points)
+        cropped_distorted_high = crop_to_original_size(distorted_image_high, original_width, original_height)
+
+        # Save images and metadata for moderate noise
+        original_path = os.path.join(output_dir, f"original_{idx}.png")
+        distorted_path = os.path.join(output_dir, f"distorted_{idx}.png")
+        Image.fromarray(cropped_original_image).save(original_path)
+        Image.fromarray(cropped_distorted_moderate).save(distorted_path)
+        metadata = {
+            "idx": idx,
+            "plate_number": plate_number,
+            "alpha": alpha,
+            "beta": beta,
+            "noise_level": noise_level_moderate,
+            "digit_bboxes": digit_bboxes
+        }
+        metadata_path = os.path.join(output_dir, f"metadata_{idx}.json")
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f)
+        idx += 1
+
+        # Save images and metadata for high noise
+        original_path = os.path.join(output_dir, f"original_{idx}.png")
+        distorted_path = os.path.join(output_dir, f"distorted_{idx}.png")
+        Image.fromarray(cropped_original_image).save(original_path)
+        Image.fromarray(cropped_distorted_high).save(distorted_path)
+        metadata = {
+            "idx": idx,
+            "plate_number": plate_number,
+            "alpha": alpha,
+            "beta": beta,
+            "noise_level": noise_level_high,
+            "digit_bboxes": digit_bboxes
+        }
+        metadata_path = os.path.join(output_dir, f"metadata_{idx}.json")
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f)
+        idx += 1
+
+    print("Test dataset generation completed.")
+
                
 # =====================================
 # Main Function 
@@ -377,7 +486,6 @@ def generate_dataset(num_samples, output_dir, noise_level_range, original_width,
 
 def main():
     num_samples = 10240  # Number of training images to generate for the dataset
-    test_samples = 1024  # Number of test images to generate
     unique_samples = 32  # Number of unique images to generate for experiments
     output_dir = "data"  # Directory to save the dataset images
     test_output_dir = "data_test"  # Directory to save the test dataset images
@@ -387,9 +495,7 @@ def main():
     noise_level_range = (20, 220)  # Uniform noise levels 
 
     factor = 2  # Scaling factor for image size (0: 128x32, 1: 256x64, 2: 512x128, 3: 1024x256)
-
-    # Calculate the scaling multiplier
-    scale = 2 ** factor
+    scale = 2 ** factor # Calculate the scaling multiplier
 
     # Scale the height, width, and text size
     f = int(128 * scale)         # Scaled width (focal length)
@@ -397,14 +503,14 @@ def main():
     text_size = int(25 * scale)  # Scaled text size
 
     # Generate the training dataset
-    #generate_dataset(num_samples, output_dir, noise_level_range, f, h, text_size, seed=seed)
-    
-    # Generate the test dataset
-    #generate_dataset(test_samples, test_output_dir, noise_level_range, f, h, text_size, seed=seed+2)
+    # generate_dataset(num_samples, output_dir, noise_level_range, f, h, text_size, seed=seed)
     
     # Keep the unique dataset for experiments
-    generate_dataset(unique_samples, unique_output_dir, noise_level_range, f, h, text_size, seed=seed+1)
-
+    # generate_dataset(unique_samples, unique_output_dir, noise_level_range, f, h, text_size, seed=seed+1)
+    
+    # Generate the test dataset using the new function
+    generate_test_dataset_custom(output_dir=test_output_dir, original_width=f, original_height=h, text_size=text_size, seed=seed+2)
+    
 if __name__ == "__main__":
     main()
 
