@@ -15,19 +15,19 @@ def create_license_plate(width, height, text_size):
     Creates a license plate image with a random number.
 
     Args:
-        width (int, optional): The width of the license plate image. 
-        height (int, optional): The height of the license plate image. 
-        text_size (int, optional): The font size of the license plate number. 
+        width (int): The width of the license plate image.
+        height (int): The height of the license plate image.
+        text_size (int): The font size of the license plate number.
 
     Returns:
         tuple: A tuple containing:
             - image (PIL.Image): The generated license plate image.
-            - corners (list of tuples): The corner coordinates of the license plate [(x1, y1), (x2, y1), (x3, y3), (x4, y4)].
+            - corners (list of tuples): The corner coordinates of the license plate [(x, y), (x + w, y), (x + w, y + h), (x, y + h)].
             - plate_number (str): The generated plate number.
             - bboxes (list of tuples): List of bounding boxes for each digit [(x, y, w, h), ...].
     """
     plate_number = " ".join([str(random.randint(0, 9)) for _ in range(6)])  # Generate a random plate number
-    
+
     background_color = (255, 203, 9)
     text_color = (0, 0, 0)
 
@@ -54,17 +54,17 @@ def create_license_plate(width, height, text_size):
     new_width, new_height = int(width * 1.5), int(height * 2)
     new_image = Image.new("RGB", (new_width, new_height), (0, 0, 0))
 
-    # Calculate the corners of the original image in the new image
-    x1 = (new_width - width) // 2
-    y1 = (new_height - height) // 2
-    x2 = x1 + width
-    y2 = y1 + height
+    # Calculate the position and size
+    x = (new_width - width) // 2
+    y = (new_height - height) // 2
+    w = width
+    h = height
 
-    corners = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+    corners = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
 
     # Paste the original image in the center
-    new_image.paste(image, (x1, y1))
-        
+    new_image.paste(image, (x, y))
+
     plate_number = plate_number.replace(" ", "")  # Plate number without spaces for metadata
 
     # Convert PIL Image to numpy array
@@ -76,7 +76,7 @@ def create_license_plate(width, height, text_size):
     gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
 
     # Crop the grayscale image to the license plate area
-    gray_plate = gray[y1:y2, x1:x2]
+    gray_plate = gray[y:y + h, x:x + w]
 
     # Threshold the image to get binary image
     _, thresh_plate = cv2.threshold(gray_plate, 100, 255, cv2.THRESH_BINARY_INV)
@@ -84,12 +84,12 @@ def create_license_plate(width, height, text_size):
     # Find contours
     contours, _ = cv2.findContours(thresh_plate, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    offset = 5
+    offset = 1
     bboxes = []
     for cnt in contours:
-        x, y, w, h = cv2.boundingRect(cnt)
-        x, y, w, h = x - offset, y - offset, w + 2 * offset, h + 2 * offset
-        bboxes.append((x, y, w, h))
+        cx, cy, cw, ch = cv2.boundingRect(cnt)
+        cx, cy, cw, ch = cx - offset, cy - offset, cw + offset, ch + offset
+        bboxes.append((cx, cy, cw, ch))
 
     # Sort bounding boxes from left to right
     bboxes = sorted(bboxes, key=lambda bbox: bbox[0])
@@ -107,7 +107,6 @@ def warp_image(image, src_points, alpha, beta, f):
     Args:
         image (numpy.ndarray): The input image to be warped.
         src_points (numpy.ndarray): Coordinates of the four corners of the input image, in clockwise order.
-                                    Shape: (4, 2), format: [[x1, y1], [x2, y2], [x3, y3], [x4, y4]].
         alpha (float): Rotation angle around the y-axis (horizontal rotation), in degrees.
         beta (float): Rotation angle around the x-axis (vertical rotation), in degrees.
         f (int, optional): Focal length, representing the distance from the camera to the image plane. 
@@ -183,8 +182,7 @@ def dewarp_image(image, src_points, dst_points):
         image (numpy.ndarray): The input image to be dewarped.
         src_points (numpy.ndarray): Coordinates of the corners of the original image (in clockwise order).
         dst_points (numpy.ndarray): Coordinates of the corners of the warped image (in clockwise order).
-                                    numpy array of shape (4, 2): [[x1, y1], [x2, y2], [x3, y3], [x4, y4]]
-                    
+                  
     Returns:
         numpy.ndarray: The dewarped image.
     """
@@ -372,21 +370,16 @@ def generate_dataset(num_samples, output_dir, noise_level_range, original_width,
             json.dump(metadata, f)
 
 
-def generate_test_dataset_custom(output_dir, original_width, original_height, text_size, seed=None):
+def generate_test_dataset(output_dir, original_width, original_height, text_size, seed=None):
     """
-    Generates a test dataset focusing on the upper-right rectangle of the angle range:
-    - Scenario 1:
-        Alpha in [80..89]
-        Beta in [0..89]
-    - Scenario 2:
-        Beta in [80..89]
-        Alpha in [0..79]  (to avoid duplication of the intersection with scenario 1)
-    
-    For each alpha, beta pair, creates two images:
-        1) Moderate noise: stddev in [0..100]
-        2) High noise: stddev in [101..200]
-    
-    This ensures an even distribution across the specified angle ranges without duplicating the intersection region.
+    Generates a test dataset covering the full range of angles:
+    - alpha in [0..89]
+    - beta in [0..89]
+
+    For each (alpha, beta) pair, one image is created:
+        - Noise: stddev in [10..30]
+
+    This ensures a comprehensive coverage of the angle space.
     """
 
     if seed is not None:
@@ -395,31 +388,14 @@ def generate_test_dataset_custom(output_dir, original_width, original_height, te
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Define angle ranges
-    alpha_high_range = range(80, 90)  # 80 to 89 inclusive
-    beta_full_range = range(0, 90)    # 0 to 89 inclusive
-    beta_high_range = range(80, 90)
-    alpha_partial_range = range(0, 80)  # 0 to 79 inclusive
+    # Define full angle ranges
+    alpha_range = range(0, 90)  # 0 to 89 inclusive
+    beta_range = range(0, 90)   # 0 to 89 inclusive
 
-    # We'll collect parameter combinations here
-    parameter_combinations = []
-
-    # Scenario 1: alpha in [80..89], beta in [0..89]
-    for alpha in alpha_high_range:
-        for beta in beta_full_range:
-            parameter_combinations.append((alpha, beta))
-
-    # Scenario 2: beta in [80..89], alpha in [0..79]
-    for beta in beta_high_range:
-        for alpha in alpha_partial_range:
-            parameter_combinations.append((alpha, beta))
-
-    # Now we have a set of (alpha, beta) pairs that cover:
-    # - The full "high alpha" with full beta range scenario
-    # - The full "high beta" with partial alpha range scenario (avoiding duplication of the intersection)
+    parameter_combinations = [(a, b) for a in alpha_range for b in beta_range]
 
     idx = 0
-    for alpha, beta in tqdm(parameter_combinations, desc="Generating test dataset"):
+    for alpha, beta in tqdm(parameter_combinations, desc="Generating full-range test dataset"):
         # Create the license plate
         original_image_pil, src_points, plate_number, digit_bboxes = create_license_plate(original_width, original_height, text_size)
         original_image_rgb = np.array(original_image_pil)
@@ -427,31 +403,25 @@ def generate_test_dataset_custom(output_dir, original_width, original_height, te
         # Warp the image
         warped_image, dst_points = warp_image(original_image_rgb, np.array(src_points), alpha, beta, f=original_width)
 
-        # We'll generate two samples: one moderate noise and one high noise
-        # Moderate noise
-        noise_level_moderate = random.uniform(0, 100)
-        noisy_image_moderate = add_gaussian_noise(warped_image, dst_points, stddev=noise_level_moderate)
-        distorted_image_moderate = dewarp_image(noisy_image_moderate, src_points, dst_points)
+        # Generate noise in the range [10, 30]
+        noise_level = random.uniform(10, 30)
+        noisy_image = add_gaussian_noise(warped_image, dst_points, stddev=noise_level)
+        distorted_image = dewarp_image(noisy_image, src_points, dst_points)
         cropped_original_image = crop_to_original_size(original_image_rgb, original_width, original_height)
-        cropped_distorted_moderate = crop_to_original_size(distorted_image_moderate, original_width, original_height)
+        cropped_distorted_image = crop_to_original_size(distorted_image, original_width, original_height)
 
-        # High noise
-        noise_level_high = random.uniform(101, 200)
-        noisy_image_high = add_gaussian_noise(warped_image, dst_points, stddev=noise_level_high)
-        distorted_image_high = dewarp_image(noisy_image_high, src_points, dst_points)
-        cropped_distorted_high = crop_to_original_size(distorted_image_high, original_width, original_height)
-
-        # Save images and metadata for moderate noise
+        # Save images and metadata
         original_path = os.path.join(output_dir, f"original_{idx}.png")
         distorted_path = os.path.join(output_dir, f"distorted_{idx}.png")
         Image.fromarray(cropped_original_image).save(original_path)
-        Image.fromarray(cropped_distorted_moderate).save(distorted_path)
+        Image.fromarray(cropped_distorted_image).save(distorted_path)
+        
         metadata = {
             "idx": idx,
             "plate_number": plate_number,
             "alpha": alpha,
             "beta": beta,
-            "noise_level": noise_level_moderate,
+            "noise_level": noise_level,
             "digit_bboxes": digit_bboxes
         }
         metadata_path = os.path.join(output_dir, f"metadata_{idx}.json")
@@ -459,26 +429,7 @@ def generate_test_dataset_custom(output_dir, original_width, original_height, te
             json.dump(metadata, f)
         idx += 1
 
-        # Save images and metadata for high noise
-        original_path = os.path.join(output_dir, f"original_{idx}.png")
-        distorted_path = os.path.join(output_dir, f"distorted_{idx}.png")
-        Image.fromarray(cropped_original_image).save(original_path)
-        Image.fromarray(cropped_distorted_high).save(distorted_path)
-        metadata = {
-            "idx": idx,
-            "plate_number": plate_number,
-            "alpha": alpha,
-            "beta": beta,
-            "noise_level": noise_level_high,
-            "digit_bboxes": digit_bboxes
-        }
-        metadata_path = os.path.join(output_dir, f"metadata_{idx}.json")
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f)
-        idx += 1
-
-    print("Test dataset generation completed.")
-
+    print("Full-range test dataset generation completed.")
                
 # =====================================
 # Main Function 
@@ -506,10 +457,10 @@ def main():
     # generate_dataset(num_samples, output_dir, noise_level_range, f, h, text_size, seed=seed)
     
     # Keep the unique dataset for experiments
-    # generate_dataset(unique_samples, unique_output_dir, noise_level_range, f, h, text_size, seed=seed+1)
+    #generate_dataset(unique_samples, unique_output_dir, noise_level_range, f, h, text_size, seed=seed+28)
     
     # Generate the test dataset using the new function
-    generate_test_dataset_custom(output_dir=test_output_dir, original_width=f, original_height=h, text_size=text_size, seed=seed+2)
+    generate_test_dataset(output_dir=test_output_dir, original_width=f, original_height=h, text_size=text_size, seed=seed+73)
     
 if __name__ == "__main__":
     main()
