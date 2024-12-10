@@ -226,37 +226,69 @@ def crop_to_original_size(image, original_width, original_height):
     cropped_image = image[top:bottom, left:right]
     return cropped_image
 
-def add_gaussian_noise(image, dst_points, stddev):
+def simulate_luminance_chroma_noise_with_artifacts(image, lum_std=20, chroma_std=10):
     """
-    Adds Gaussian noise to the L channel of the HLS color space in the license plate region of the image.
+    Simulate Gaussian blur, vertical double edges, luminance/chroma noise, and mosaic noise applied 
+    at the end with a random chance per tile.
 
     Args:
-        image (numpy.ndarray): The input image in RGB format.
-        dst_points (numpy.ndarray): The destination points (warped coordinates) of the license plate.
-        mean (float, optional): Mean of the Gaussian noise. 
-        stddev (float, optional): Standard deviation of the Gaussian noise. 
+        image (ndarray): Input image in RGB format.
+        lum_std (int): Standard deviation for luminance noise.
+        chroma_std (int): Standard deviation for chroma noise.
 
     Returns:
-        numpy.ndarray: The image with added Gaussian noise in the L channel of the license plate region.
+        ndarray: Processed image in RGB format.
     """
-    # Convert the image to HLS color space
-    hls_image = cv2.cvtColor(image, cv2.COLOR_RGB2HLS)
-    H, L, S = cv2.split(hls_image)
-    
-    # Create a mask based on the destination points
-    mask = np.zeros(image.shape[:2], dtype=np.uint8) 
-    cv2.fillPoly(mask, [np.int32(dst_points)], 255) 
+    # Step 1: Convert RGB to BGR for OpenCV processing
+    image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-    # Apply noise only to the L channel within the mask
-    noise = np.random.normal(0, stddev, L.shape).astype(np.float32)
-    L_noisy = np.where(mask == 255, L.astype(np.float32) + noise, L.astype(np.float32))
-    L_noisy = np.clip(L_noisy, 0, 255).astype(np.uint8)
+    # Step 2: Apply Gaussian blur
+    blur_kernel_size = (3, 3)  # Kernel size for blur
+    blurred_image = cv2.GaussianBlur(image_bgr, blur_kernel_size, sigmaX=1, sigmaY=1)
 
-    # Merge and convert back to RGB
-    noisy_hls_image = cv2.merge([H, L_noisy, S])
-    noisy_rgb_image = cv2.cvtColor(noisy_hls_image, cv2.COLOR_HLS2RGB)
-    
-    return noisy_rgb_image
+    # Step 3: Apply vertical double-edge effect
+    kernel = np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]], dtype=np.float32)
+    double_edges = cv2.filter2D(blurred_image, -1, kernel)
+    blurred_image = cv2.addWeighted(blurred_image, 1.0, double_edges, 0.2, 0)
+
+    # Step 4: Add luminance and chroma noise in YCrCb space
+    ycrcb = cv2.cvtColor(blurred_image, cv2.COLOR_BGR2YCrCb)
+    y, cr, cb = cv2.split(ycrcb)
+
+    # Add Gaussian noise to luminance (Y) and chroma (Cr, Cb) channels
+    lum_noise = np.random.normal(0, lum_std, y.shape).astype(np.float32)
+    cr_noise = np.random.normal(0, chroma_std, cr.shape).astype(np.float32)
+    cb_noise = np.random.normal(0, chroma_std, cb.shape).astype(np.float32)
+
+    y_noisy = np.clip(y.astype(np.float32) + lum_noise, 0, 255).astype(np.uint8)
+    cr_noisy = np.clip(cr.astype(np.float32) + cr_noise, 0, 255).astype(np.uint8)
+    cb_noisy = np.clip(cb.astype(np.float32) + cb_noise, 0, 255).astype(np.uint8)
+
+    # Merge noisy channels and convert back to BGR
+    ycrcb_noisy = cv2.merge([y_noisy, cr_noisy, cb_noisy])
+    noisy_bgr = cv2.cvtColor(ycrcb_noisy, cv2.COLOR_YCrCb2BGR)
+
+    # Step 5: Apply mosaic noise with 35% probability for tiles of size 4
+    h, w = noisy_bgr.shape[:2]
+    tile_size = 4
+
+    for yy in range(0, h, tile_size):
+        for xx in range(0, w, tile_size):
+            if random.random() < 0.35:  # 35% chance to apply mosaic noise
+                tile_h = min(tile_size, h - yy)
+                tile_w = min(tile_size, w - xx)
+
+                # Apply mosaic effect with block size 2
+                tile = noisy_bgr[yy:yy + tile_h, xx:xx + tile_w]
+                small_h, small_w = max(1, tile_h // 2), max(1, tile_w // 2)
+                mosaic_tile = cv2.resize(tile, (small_w, small_h), interpolation=cv2.INTER_LINEAR)
+                mosaic_tile = cv2.resize(mosaic_tile, (tile_w, tile_h), interpolation=cv2.INTER_NEAREST)
+
+                noisy_bgr[yy:yy + tile_h, xx:xx + tile_w] = mosaic_tile
+
+    # Step 6: Convert BGR back to RGB before returning
+    noisy_rgb = cv2.cvtColor(noisy_bgr, cv2.COLOR_BGR2RGB)
+    return noisy_rgb
 
 # =====================================
 # Manage Existing Data
@@ -289,14 +321,14 @@ def manage_existing_data(output_dir, num_samples):
 # Dataset Generation with Cropping
 # =====================================
 
-def generate_dataset(num_samples, output_dir, noise_level_range, original_width, original_height, text_size, seed=None):
+def generate_dataset(num_samples, output_dir, original_width, original_height, text_size, seed=None):
     """
     Generates and saves the dataset, including cropping of distorted images to original plate size.
     
     Args:
         num_samples (int): Number of image pairs to generate.
         output_dir (str): Directory to save generated images and metadata.
-        noise_level_range (tuple): Range of noise levels (mean, stddev) for random Gaussian noise.
+        noise_level_range (tuple): Range of noise levels (stddev) for luminance/chroma noise.
         original_width (int): Original width of the license plate.
         original_height (int): Original height of the license plate.
         text_size (int): Font size of the license plate number.
@@ -312,38 +344,28 @@ def generate_dataset(num_samples, output_dir, noise_level_range, original_width,
     manage_existing_data(output_dir, num_samples)
     
     for idx in tqdm(range(num_samples), desc="Generating samples"):
+        # Generate a clean license plate
         original_image_pil, src_points, plate_number, digit_bboxes = create_license_plate(original_width, original_height, text_size)
         original_image_rgb = np.array(original_image_pil)
 
-        # Decide randomly whether to select alpha or beta first
-        if random.random() < 0.5:
-            # Choose alpha first
-            alpha_choices = np.arange(80.0, 88.0 + 0.001, 0.2)
-            alpha = random.choice(alpha_choices)
-            # Calculate beta_max from alpha
-            beta_max = -5.0 * (alpha - 80.0) + 80.0
-            # Sample beta from [0, beta_max]
-            beta = random.uniform(0, beta_max)
-        else:
-            # Choose beta first
-            beta_choices = np.arange(80.0, 88.0 + 0.001, 0.2)
-            beta = random.choice(beta_choices)
-            # Calculate alpha_max from beta
-            alpha_max = -5.0 * (beta - 80.0) + 80.0
-            # Sample alpha from [0, alpha_max]
-            alpha = random.uniform(0, alpha_max)
-        
+        # Sample angles freely
+        alpha = random.uniform(80, 90)  # First angle from 80 to 89 inclusive
+        beta = random.uniform(0, 90)    # Second angle from 0 to 89 inclusive
+
         # Randomly flip signs to include negative angles
         if random.random() < 0.5:
             alpha = -alpha
         if random.random() < 0.5:
             beta = -beta
 
-        noise_level = random.uniform(*noise_level_range)
+        # Random noise level in the range 10 to 30
+        noise_level = random.uniform(10, 30)
 
         # Warp and add noise to the image
         warped_image, dst_points = warp_image(original_image_rgb, np.array(src_points), alpha, beta, f=original_width)
-        noisy_image = add_gaussian_noise(warped_image, dst_points, stddev=noise_level)
+        noisy_image = simulate_luminance_chroma_noise_with_artifacts(
+            warped_image, lum_std=noise_level, chroma_std=noise_level / 4
+        )
         distorted_image = dewarp_image(noisy_image, src_points, dst_points)
 
         # Crop both the original and distorted images back to the original license plate size
@@ -405,7 +427,9 @@ def generate_test_dataset(output_dir, original_width, original_height, text_size
 
         # Generate noise in the range [10, 30]
         noise_level = random.uniform(10, 30)
-        noisy_image = add_gaussian_noise(warped_image, dst_points, stddev=noise_level)
+        noisy_image = simulate_luminance_chroma_noise_with_artifacts(
+            warped_image, lum_std=noise_level, chroma_std=noise_level / 4
+        )
         distorted_image = dewarp_image(noisy_image, src_points, dst_points)
         cropped_original_image = crop_to_original_size(original_image_rgb, original_width, original_height)
         cropped_distorted_image = crop_to_original_size(distorted_image, original_width, original_height)
@@ -443,8 +467,6 @@ def main():
     unique_output_dir = "data_unique"  # Directory to save the unique experimental images
     seed = 42  # Random seed for reproducibility
 
-    noise_level_range = (20, 220)  # Uniform noise levels 
-
     factor = 2  # Scaling factor for image size (0: 128x32, 1: 256x64, 2: 512x128, 3: 1024x256)
     scale = 2 ** factor # Calculate the scaling multiplier
 
@@ -454,10 +476,10 @@ def main():
     text_size = int(25 * scale)  # Scaled text size
 
     # Generate the training dataset
-    # generate_dataset(num_samples, output_dir, noise_level_range, f, h, text_size, seed=seed)
+    generate_dataset(num_samples, output_dir, f, h, text_size, seed=seed)
     
     # Keep the unique dataset for experiments
-    #generate_dataset(unique_samples, unique_output_dir, noise_level_range, f, h, text_size, seed=seed+28)
+    generate_dataset(unique_samples, unique_output_dir, f, h, text_size, seed=seed+28)
     
     # Generate the test dataset using the new function
     generate_test_dataset(output_dir=test_output_dir, original_width=f, original_height=h, text_size=text_size, seed=seed+73)
