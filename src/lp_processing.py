@@ -84,11 +84,11 @@ def create_license_plate(width, height, text_size):
     # Find contours
     contours, _ = cv2.findContours(thresh_plate, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    offset = 1
+    offset = 3
     bboxes = []
     for cnt in contours:
         cx, cy, cw, ch = cv2.boundingRect(cnt)
-        cx, cy, cw, ch = cx - offset, cy - offset, cw + offset, ch + offset
+        cx, cy, cw, ch = cx - offset, cy - offset, cw + 2*offset, ch + 2*offset
         bboxes.append((cx, cy, cw, ch))
 
     # Sort bounding boxes from left to right
@@ -226,7 +226,7 @@ def crop_to_original_size(image, original_width, original_height):
     cropped_image = image[top:bottom, left:right]
     return cropped_image
 
-def simulate_luminance_chroma_noise_with_artifacts(image, lum_std=20, chroma_std=10):
+def simulate_noise(image, lum_std=20, chroma_std=10):
     """
     Simulate Gaussian blur, vertical double edges, luminance/chroma noise, and mosaic noise applied 
     at the end with a random chance per tile.
@@ -348,9 +348,19 @@ def generate_dataset(num_samples, output_dir, original_width, original_height, t
         original_image_pil, src_points, plate_number, digit_bboxes = create_license_plate(original_width, original_height, text_size)
         original_image_rgb = np.array(original_image_pil)
 
-        # Sample angles freely
-        alpha = random.uniform(80, 90)  # First angle from 80 to 89 inclusive
-        beta = random.uniform(0, 90)    # Second angle from 0 to 89 inclusive
+        choices = np.arange(80.0, 88.2, 0.2)
+        
+        def calculate_max(value):
+            return -5.0 * (value - 80.0) + 80.0
+        
+        if random.random() < 0.5:
+            # Choose alpha first
+            alpha = random.choice(choices)
+            beta = random.uniform(0, calculate_max(alpha))
+        else:
+            # Choose beta first
+            beta = random.choice(choices)
+            alpha = random.uniform(0, calculate_max(beta))
 
         # Randomly flip signs to include negative angles
         if random.random() < 0.5:
@@ -363,9 +373,7 @@ def generate_dataset(num_samples, output_dir, original_width, original_height, t
 
         # Warp and add noise to the image
         warped_image, dst_points = warp_image(original_image_rgb, np.array(src_points), alpha, beta, f=original_width)
-        noisy_image = simulate_luminance_chroma_noise_with_artifacts(
-            warped_image, lum_std=noise_level, chroma_std=noise_level / 4
-        )
+        noisy_image = simulate_noise(warped_image, lum_std=noise_level, chroma_std=noise_level / 4)
         distorted_image = dewarp_image(noisy_image, src_points, dst_points)
 
         # Crop both the original and distorted images back to the original license plate size
@@ -427,9 +435,7 @@ def generate_test_dataset(output_dir, original_width, original_height, text_size
 
         # Generate noise in the range [10, 30]
         noise_level = random.uniform(10, 30)
-        noisy_image = simulate_luminance_chroma_noise_with_artifacts(
-            warped_image, lum_std=noise_level, chroma_std=noise_level / 4
-        )
+        noisy_image = simulate_noise(warped_image, lum_std=noise_level, chroma_std=noise_level / 4)
         distorted_image = dewarp_image(noisy_image, src_points, dst_points)
         cropped_original_image = crop_to_original_size(original_image_rgb, original_width, original_height)
         cropped_distorted_image = crop_to_original_size(distorted_image, original_width, original_height)
