@@ -1,61 +1,96 @@
-# License Plate Recognition Enhancement Project
+This is good final version:
 
-**Full Project Title:** Generative image models for enhancing license plate images captured at extreme viewing angles
+# Generative Image Models for Enhancing License Plate Images
 
-## Project Overview
+## Overview
 
-This project aims to develop and compare generative AI models for enhancing license plate images captured at extreme viewing angles. The goal is to improve the clarity and readability of distorted and noisy license plate images using advanced deep-learning techniques.
+This project investigates generative models to improve the readability of license plate images captured under extreme viewing angles and noise conditions. The research evaluates and compares **U-Net**, **GANs**, and **Diffusion Models** for restoring distorted license plates. The main objectives are to simulate distortions, implement advanced generative models, and evaluate them for improving readability and OCR accuracy.
 
-## Current Implementation
+---
 
-At present, the project focuses on data preparation and simulation, including:
+## Methodology
 
-1. Synthetic License Plate Generation
-2. Perspective Transformation (Warping)
-3. Noise Injection
-4. Perspective Correction (Dewarping)
+### Data Preparation
 
-These components form the foundation for creating a robust dataset that simulates real-world challenging scenarios for license plate recognition.
+Synthetic datasets were generated to simulate extreme viewing angles and noise conditions:
 
-## Features
+- **Perspective Distortion**: Applied 3D rotations and projections.
+- **Noise Simulation**: Added Gaussian blur, luminance, chromatic disturbances, and mosaic artifacts.
+- **Realignment and Cropping**: Restored distorted images to their original dimensions.
+- **Dataset Partitioning**: Organized into training, validation, and test subsets with comprehensive angle coverage.
 
-### Synthetic Data Generation
+### Models
 
-- Creates realistic license plate images with customizable parameters
-- Supports various formats and styles of license plates
+- **U-Net**: Encoder-decoder architecture with skip connections for efficient feature extraction and reconstruction.
+- **Pix2Pix GAN**: Conditional GAN with a U-Net generator and PatchGAN discriminator for generating realistic and accurate corrections.
+- **Diffusion Model (DDPM/DDRM)**: An iterative noise reduction framework extended for precise image restoration tasks.
 
-### Perspective Transformation (Warping)
+### Evaluation Metrics
 
-- Simulates extreme viewing angles
-- Applies projective geometry to distort license plate images
+- **Peak Signal-to-Noise Ratio (PSNR)**: Measures noise reduction.
+- **Structural Similarity Index (SSIM)**: Quantifies structural preservation.
+- **OCR Accuracy**: Validates readability of restored license plates.
 
-### Noise Injection
+### Heatmap Visualization
 
-- Adds various types of noise to images (e.g., Gaussian, Salt-and-Pepper)
-- Simulates real-world image degradation
+Heatmaps visually represent model performance across the full range of angles in the test set. Metrics such as **PSNR**, **SSIM**, and **OCR Accuracy** are plotted to highlight trends and identify areas where models excel or struggle.
 
-### Perspective Correction (Dewarping)
+---
 
-- Attempts to reverse the warping process
-- Provides a baseline for comparison with future AI-enhanced methods
+## Results
 
-## Results Visualization
+### License plate creation and augmentation
+![augmentation](results/data_augmentation.png) 
 
-![Result Example](results/rotation_animation.gif)
-![Result Example](results/Augmentation.png)
+### U-Net Restoration Example
+![Unet_sample](results/Unet_sample.png) 
 
-## Planned Future Developments
+### Visualization Tool
+![visualization_tool_demo](path/to/visualization_tool_demo.gif)
 
-- Implementation of U-Net for image enhancement
-- Integration of Generative Adversarial Networks (GANs)
-- Exploration of Differential Diffusion Models (DDMs)
-- Comprehensive comparison of different AI models for license plate enhancement
+The interactive visualization tool allows users to explore metrics like PSNR, SSIM, and OCR Accuracy by selecting angle combinations directly on the heatmaps.
+
+---
+
+## Future Work
+
+### Model Optimization
+- Fine-tune GAN and Diffusion Models for improved robustness.
+- Experiment with new loss functions and expand the hyperparameter search space.
+
+### Dataset Enhancements
+- Incorporate more realistic noise patterns.
+- Explore adaptive angle selection strategies for balanced dataset coverage.
+
+### Model Expansion
+- Investigate alternative architectures and enhancements for GANs and Diffusion Models.
+
+### OCR System Improvements
+- Explore advanced OCR tools for improved recognition accuracy.
+
+### Visualization and Comparison
+- Perform detailed model comparisons and generate comprehensive heatmaps.
+
+---
 
 ## Contributors
 
-- Orpaz Ben Aharon
-- Igor Adamenko
+- **Igor Adamenko**
+- **Orpaz Ben Aharon**
+- **Mentor**: Dr. Sasha Apartsin
 
-## Mentor
+---
 
-Dr. Sasha Apartsin
+## Technical Resources
+
+| **Category**       | **Tools and Resources**                                  |
+|---------------------|---------------------------------------------------------|
+| **Hardware**        | NVIDIA GTX 1080 GPU, Google Colab                       |
+| **Development Environments** | VS Code, Jupyter Notebooks, Anaconda          |
+| **Frameworks**      | PyTorch                                                |
+| **Libraries**       | OpenCV, NumPy, PIL (Pillow)                             |
+| **OCR Tools**       | Tesseract OCR                                          |
+| **Experiment Management** | MLflow (experiment tracking), Optuna (hyperparameter tuning) |
+| **Visualization**   | Matplotlib (graphs, heatmaps, performance analyses)     |
+| **Documentation**   | Google Docs, Microsoft Word                            |
+| **Project Management** | Microsoft Project, Git (version control), GitHub   |
