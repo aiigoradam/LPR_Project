@@ -40,13 +40,13 @@ Heatmaps visually represent model performance across the full range of angles in
 ## Results
 
 ### License plate creation and augmentation
-![augmentation](results/data_augmentation.png) 
+![data_augmentation](results/data_augmentation.png) 
 
 ### U-Net Restoration Example
 ![Unet_sample](results/Unet_sample.png) 
 
 ### Visualization Tool
-![visualization_tool_demo](path/to/visualization_tool_demo.gif)
+![visualization_tool_demo](results/visualization_tool_demo.gif)
 
 The interactive visualization tool allows users to explore metrics like PSNR, SSIM, and OCR Accuracy by selecting angle combinations directly on the heatmaps.
 
