@@ -226,68 +226,71 @@ def crop_to_original_size(image, original_width, original_height):
     cropped_image = image[top:bottom, left:right]
     return cropped_image
 
-def simulate_noise(image, lum_std=20, chroma_std=10):
+def simulate_noise(image, debug_dir=None):
     """
-    Simulate Gaussian blur, vertical double edges, luminance/chroma noise, and mosaic noise applied 
-    at the end with a random chance per tile.
-
-    Args:
-        image (ndarray): Input image in RGB format.
-        lum_std (int): Standard deviation for luminance noise.
-        chroma_std (int): Standard deviation for chroma noise.
-
-    Returns:
-        ndarray: Processed image in RGB format.
+    Simulates noise in an image by applying a series of image processing operations.
     """
-    # Step 1: Convert RGB to BGR for OpenCV processing
-    image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    if debug_dir is not None:
+        os.makedirs(debug_dir, exist_ok=True)
+        step_idx = 0
+        cv2.imwrite(os.path.join(debug_dir, f"step_{step_idx}_input.png"), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+        step_idx += 1
 
-    # Step 2: Apply Gaussian blur
-    blur_kernel_size = (3, 3)  # Kernel size for blur
-    blurred_image = cv2.GaussianBlur(image_bgr, blur_kernel_size, sigmaX=1, sigmaY=1)
-
-    # Step 3: Apply vertical double-edge effect
+    # apply double edge detection
     kernel = np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]], dtype=np.float32)
-    double_edges = cv2.filter2D(blurred_image, -1, kernel)
-    blurred_image = cv2.addWeighted(blurred_image, 1.0, double_edges, 0.2, 0)
+    double_edges = cv2.filter2D(image, -1, kernel)
+    blurred_image = cv2.addWeighted(image,0.7, double_edges, 0.3, 0)
+    image_bgr = cv2.cvtColor(blurred_image.astype(np.uint8), cv2.COLOR_RGB2BGR)
+    if debug_dir:
+        cv2.imwrite(os.path.join(debug_dir, f"step_{step_idx}_double_edges+shadows.png"), image_bgr)
+        step_idx += 1
 
-    # Step 4: Add luminance and chroma noise in YCrCb space
-    ycrcb = cv2.cvtColor(blurred_image, cv2.COLOR_BGR2YCrCb)
-    y, cr, cb = cv2.split(ycrcb)
+    # Simplified ISP pipeline
+    # Auto white balance (random scaling of R and B channels)
+    b, g, r = cv2.split(image_bgr)
+    # Apply random scaling to R and B channels
+    r_scale = np.random.uniform(0.8, 1.2)  # Random factor between 0.8 and 1.2
+    b_scale = np.random.uniform(0.8, 1.2)  # Independent random factor for blue
+    r_adjusted = np.clip(r * r_scale, 0, 255).astype(np.uint8)
+    b_adjusted = np.clip(b * b_scale, 0, 255).astype(np.uint8)
+    # Merge channels back together
+    image_bgr = cv2.merge([b_adjusted, g, r_adjusted])
+    
+    if debug_dir:
+        cv2.imwrite(os.path.join(debug_dir, f"step_{step_idx}_white_balance.png"), image_bgr)
+        step_idx += 1
 
-    # Add Gaussian noise to luminance (Y) and chroma (Cr, Cb) channels
-    lum_noise = np.random.normal(0, lum_std, y.shape).astype(np.float32)
-    cr_noise = np.random.normal(0, chroma_std, cr.shape).astype(np.float32)
-    cb_noise = np.random.normal(0, chroma_std, cb.shape).astype(np.float32)
+    # Denoising (light Gaussian blur)
+    image_bgr = cv2.GaussianBlur(image_bgr, (3, 3), sigmaX=1.0, sigmaY=1.0)
+    if debug_dir:
+        cv2.imwrite(os.path.join(debug_dir, f"step_{step_idx}_denoised_GaussianBlur.png"), image_bgr)
+        step_idx += 1
 
-    y_noisy = np.clip(y.astype(np.float32) + lum_noise, 0, 255).astype(np.uint8)
-    cr_noisy = np.clip(cr.astype(np.float32) + cr_noise, 0, 255).astype(np.uint8)
-    cb_noisy = np.clip(cb.astype(np.float32) + cb_noise, 0, 255).astype(np.uint8)
-
-    # Merge noisy channels and convert back to BGR
-    ycrcb_noisy = cv2.merge([y_noisy, cr_noisy, cb_noisy])
-    noisy_bgr = cv2.cvtColor(ycrcb_noisy, cv2.COLOR_YCrCb2BGR)
-
-    # Step 5: Apply mosaic noise with 35% probability for tiles of size 4
-    h, w = noisy_bgr.shape[:2]
-    tile_size = 4
-
-    for yy in range(0, h, tile_size):
-        for xx in range(0, w, tile_size):
-            if random.random() < 0.35:  # 35% chance to apply mosaic noise
-                tile_h = min(tile_size, h - yy)
-                tile_w = min(tile_size, w - xx)
-
-                # Apply mosaic effect with block size 2
-                tile = noisy_bgr[yy:yy + tile_h, xx:xx + tile_w]
-                small_h, small_w = max(1, tile_h // 2), max(1, tile_w // 2)
-                mosaic_tile = cv2.resize(tile, (small_w, small_h), interpolation=cv2.INTER_LINEAR)
-                mosaic_tile = cv2.resize(mosaic_tile, (tile_w, tile_h), interpolation=cv2.INTER_NEAREST)
-
-                noisy_bgr[yy:yy + tile_h, xx:xx + tile_w] = mosaic_tile
-
-    # Step 6: Convert BGR back to RGB before returning
-    noisy_rgb = cv2.cvtColor(noisy_bgr, cv2.COLOR_BGR2RGB)
+    # JPEG compression simulation quality 20 block size 8x8
+    _ , encoded = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 20])
+    image_bgr = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    if debug_dir:
+        cv2.imwrite(os.path.join(debug_dir, f"step_{step_idx}_jpeg_compressed.png"), image_bgr)
+        step_idx += 1
+    # Add Contrast
+    alpha = 1.5 # Contrast control (1.0-3.0)
+    beta = -50  # Brightness control (0-100)
+    image_bgr = cv2.convertScaleAbs(image_bgr, alpha=alpha, beta=beta)
+    if debug_dir:
+        cv2.imwrite(os.path.join(debug_dir, f"step_{step_idx}_contrast.png"), image_bgr)
+        step_idx += 1
+    # Add 1% Gaussian noise
+    std_dev = 0.01 * 255
+    noise = np.random.normal(0, std_dev, image_bgr.shape)
+    image_bgr = np.clip(image_bgr + noise, 0, 255).astype(np.uint8)
+    if debug_dir:
+        cv2.imwrite(os.path.join(debug_dir, f"step_{step_idx}_gaussian_noise.png"), image_bgr)
+        step_idx += 1
+    # Convert back to RGB and return
+    noisy_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    if debug_dir:
+        cv2.imwrite(os.path.join(debug_dir, f"step_{step_idx}_final_output.png"), noisy_rgb)
+    
     return noisy_rgb
 
 # =====================================
@@ -373,7 +376,7 @@ def generate_dataset(num_samples, output_dir, original_width, original_height, t
 
         # Warp and add noise to the image
         warped_image, dst_points = warp_image(original_image_rgb, np.array(src_points), alpha, beta, f=original_width)
-        noisy_image = simulate_noise(warped_image, lum_std=noise_level, chroma_std=noise_level / 4)
+        noisy_image = simulate_noise(warped_image)
         distorted_image = dewarp_image(noisy_image, src_points, dst_points)
 
         # Crop both the original and distorted images back to the original license plate size
@@ -435,7 +438,7 @@ def generate_test_dataset(output_dir, original_width, original_height, text_size
 
         # Generate noise in the range [10, 30]
         noise_level = random.uniform(10, 30)
-        noisy_image = simulate_noise(warped_image, lum_std=noise_level, chroma_std=noise_level / 4)
+        noisy_image = simulate_noise(warped_image)
         distorted_image = dewarp_image(noisy_image, src_points, dst_points)
         cropped_original_image = crop_to_original_size(original_image_rgb, original_width, original_height)
         cropped_distorted_image = crop_to_original_size(distorted_image, original_width, original_height)
@@ -473,7 +476,7 @@ def main():
     unique_output_dir = "data_unique"  # Directory to save the unique experimental images
     seed = 42  # Random seed for reproducibility
 
-    factor = 2  # Scaling factor for image size (0: 128x32, 1: 256x64, 2: 512x128, 3: 1024x256)
+    factor = 1  # Scaling factor for image size (0: 128x32, 1: 256x64, 2: 512x128, 3: 1024x256)
     scale = 2 ** factor # Calculate the scaling multiplier
 
     # Scale the height, width, and text size
