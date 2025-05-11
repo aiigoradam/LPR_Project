@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>full_grid viewer</title>
+<style>
+  body{font-family:sans-serif;margin:20px}
+  #controls{margin-bottom:1em;display:flex;gap:2em;flex-wrap:wrap}
+  .sliderBox label{display:block;font-size:.9em;margin-bottom:4px}
+  .sliderBox input{width:160px}
+  #grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px}
+  .cell{border:1px solid #ccc;padding:4px;text-align:center}
+  canvas{width:100%;height:auto;display:block}
+</style>
+</head>
+<body>
+
+<div id="controls">
+  <div class="sliderBox">
+    <label for="alpha">α (yaw)</label>
+    <input id="alpha" type="range" min="0" max="89" step="1" value="0">
+    <span id="aval">0</span>
+  </div>
+  <div class="sliderBox">
+    <label for="beta">β (pitch)</label>
+    <input id="beta" type="range" min="0" max="89" step="1" value="0">
+    <span id="bval">0</span>
+  </div>
+</div>
+
+<div id="grid"></div>
+
+<script type="module">
+import h5wasm from
+  "https://cdn.jsdelivr.net/npm/h5wasm@0.4.9/dist/esm/hdf5_hl.js";
+
+const grid   = document.getElementById('grid');
+const aSlider= document.getElementById('alpha');
+const bSlider= document.getElementById('beta');
+const aVal   = document.getElementById('aval');
+const bVal   = document.getElementById('bval');
+
+aSlider.oninput = () => {aVal.textContent=aSlider.value; scrollToAB()};
+bSlider.oninput = () => {bVal.textContent=bSlider.value; scrollToAB()};
+
+const {FS}=await h5wasm.ready;                     /* WASM FS ready :contentReference[oaicite:0]{index=0}*/
+
+/* --- load full_grid.h5 into the virtual FS --- */
+const buf = await (await fetch('full_grid.h5')).arrayBuffer();
+FS.writeFile('grid.h5', new Uint8Array(buf));
+
+/* --- open datasets --- */
+const file      = new h5wasm.File('grid.h5','r');
+const dsImg     = file.get('original');           // uint8, shape [N,H,W,3]
+const alphasArr = file.get('alpha').value;        // Float32Array
+const betasArr  = file.get('beta').value;
+
+const [N,H,W] = dsImg.shape;                      // e.g. [8100,64,256,3]
+
+/* --- helper to draw one image block into a canvas --- */
+function drawBlock(ctx, block){
+  const img = ctx.createImageData(W, H);
+  for(let p=0,q=0; p<block.length; p+=3,q+=4){
+    img.data[q]=block[p]; img.data[q+1]=block[p+1];
+    img.data[q+2]=block[p+2]; img.data[q+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+}
+
+/* --- render every plate once, row‑major --- */
+for(let idx=0; idx<N; idx++){
+  const a = Math.round(alphasArr[idx]);
+  const b = Math.round(betasArr[idx]);
+
+  const cell  = document.createElement('div');
+  cell.className='cell';
+  cell.dataset.a=a; cell.dataset.b=b;
+  const canv  = document.createElement('canvas');
+  canv.width=W; canv.height=H;
+  cell.appendChild(canv);
+  grid.appendChild(cell);
+
+  /* small slice: 1×H×W×3, returns a Promise<TypedArray> */
+  const flat = await dsImg.slice([[idx,idx+1],[],[],[]]);   // Uint8Array length H*W*3
+  drawBlock(canv.getContext('2d'), flat);
+}
+
+/* --- scroll helper --- */
+function scrollToAB(){
+  const a=aSlider.value, b=bSlider.value;
+  const target = grid.querySelector(`.cell[data-a="${a}"][data-b="${b}"]`);
+  if(target) target.scrollIntoView({behavior:'smooth',block:'center'});
+}
+</script>
+</body>
+</html>

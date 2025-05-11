@@ -9,6 +9,7 @@ import torchvision.transforms as transforms
 from pytorch_msssim import ssim
 import os
 
+
 # Set seed for reproducibility
 def set_seed(seed):
     random.seed(seed)
@@ -17,11 +18,13 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+
 # Calculate PSNR
 def calculate_psnr(outputs, targets):
     mse = F.mse_loss(outputs, targets)
     psnr = 10 * torch.log10(1 / mse)
     return psnr.item()
+
 
 # Save sample images to MLflow
 def save_sample_images(model, distorted_images, original_images, epoch, mlflow, max_images=8):
@@ -38,10 +41,10 @@ def save_sample_images(model, distorted_images, original_images, epoch, mlflow, 
         distorted_grid = make_grid(distorted_images, nrow=max_images, normalize=True, scale_each=True)
         original_grid = make_grid(original_images, nrow=max_images, normalize=True, scale_each=True)
         output_grid = make_grid(outputs, nrow=max_images, normalize=True, scale_each=True)
-        
+
         # Concatenate the grids into a single grid (dim=1 for vertical concatenation)
         combined_grid = torch.cat([distorted_grid, original_grid, output_grid], dim=1)
-        
+
         # Save the combined grid as an image artifact
         combined_grid_cpu = combined_grid.cpu()
         img = transforms.ToPILImage()(combined_grid_cpu)
@@ -50,6 +53,7 @@ def save_sample_images(model, distorted_images, original_images, epoch, mlflow, 
         mlflow.log_artifact(img_path)
         os.remove(img_path)  # Clean up after logging
     model.train()
+
 
 # Evaluate model on validation or test set
 def evaluate_model(model, dataloader, criterion, device):
@@ -61,8 +65,8 @@ def evaluate_model(model, dataloader, criterion, device):
 
     with torch.no_grad():
         for batch in dataloader:
-            distorted_images = batch['distorted'].to(device)
-            original_images = batch['original'].to(device)
+            distorted_images = batch["distorted"].to(device)
+            original_images = batch["original"].to(device)
 
             outputs = model(distorted_images)
             loss = criterion(outputs, original_images).item()
@@ -83,4 +87,3 @@ def evaluate_model(model, dataloader, criterion, device):
     val_psnr = running_psnr / num_samples
 
     return val_loss, val_mse, val_ssim, val_psnr
-
