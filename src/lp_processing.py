@@ -3,7 +3,6 @@
 import os
 import random
 import json
-import h5py
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -13,6 +12,7 @@ from tqdm import tqdm
 # =====================================
 # License Plate Generation
 # =====================================
+
 
 def create_license_plate(plate_width=256, plate_height=64, font_size=100, num_chars=6, fill_density=0.9):
     plate_number = "".join(str(random.randint(0, 9)) for _ in range(num_chars))
@@ -353,7 +353,6 @@ def generate_dataset(
     output_size=None,
     mode="random",  # "random" or "grid"
     num_samples=None,  # total samples for random, per-angle cap for grid
-    output_type="folder",  # "folder" or "h5"
 ):
 
     # 1) Seed
@@ -379,106 +378,43 @@ def generate_dataset(
 
     else:
         raise ValueError("mode must be 'random' or 'grid'")
+    
+    os.makedirs(output_path, exist_ok=True)
+    metadata_records = []
 
-    total_samples = len(angle_list)
+    for index, (alpha, beta) in enumerate(tqdm(angle_list, desc=f"Generating {output_path}")):
+        # a) Draw and warp plate
+        pil_img, src_pts, plate_txt, bboxes = create_license_plate(width, height, font_size)
+        img_rgb = np.array(pil_img)
+        warped_rgb, dst_pts = warp_image(img_rgb, src_pts, alpha, beta, f=width)
+        noisy_rgb = simulate_noise(warped_rgb)
+        dewarped_rgb = dewarp_image(noisy_rgb, src_pts, dst_pts)
 
-    # --- Folder output mode ---
-    if output_type == "folder":
-        os.makedirs(output_path, exist_ok=True)
-        metadata_records = []
+        # b) Crop back to original plate area
+        crop_clean = crop_to_original_size(img_rgb, width, height)
+        crop_dist = crop_to_original_size(dewarped_rgb, width, height)
 
-        for index, (alpha, beta) in enumerate(tqdm(angle_list, desc=f"Generating {output_path}")):
-            # a) Draw and warp plate
-            pil_img, src_pts, plate_txt, bboxes = create_license_plate(width, height, font_size)
-            img_rgb = np.array(pil_img)
-            warped_rgb, dst_pts = warp_image(img_rgb, src_pts, alpha, beta, f=width)
-            noisy_rgb = simulate_noise(warped_rgb)
-            dewarped_rgb = dewarp_image(noisy_rgb, src_pts, dst_pts)
+        # c) Optional downscale
+        if output_size is not None:
+            crop_clean, _ = downscale_plate(crop_clean, [], output_size)
+            crop_dist, bboxes = downscale_plate(crop_dist, bboxes, output_size)
 
-            # b) Crop back to original plate area
-            crop_clean = crop_to_original_size(img_rgb, width, height)
-            crop_dist = crop_to_original_size(dewarped_rgb, width, height)
+        # d) Save PNGs
+        clean_path = os.path.join(output_path, f"original_{index}.png")
+        distorted_path = os.path.join(output_path, f"distorted_{index}.png")
+        Image.fromarray(crop_clean).save(clean_path)
+        Image.fromarray(crop_dist).save(distorted_path)
 
-            # c) Optional downscale
-            if output_size is not None:
-                crop_clean, _ = downscale_plate(crop_clean, [], output_size)
-                crop_dist, bboxes = downscale_plate(crop_dist, bboxes, output_size)
+        # e) Collect metadata
+        metadata_records.append(
+            {"index": index, "plate_number": plate_txt, "alpha": alpha, "beta": beta, "digit_bboxes": bboxes}
+        )
 
-            # d) Save PNGs
-            clean_path = os.path.join(output_path, f"original_{index}.png")
-            distorted_path = os.path.join(output_path, f"distorted_{index}.png")
-            Image.fromarray(crop_clean).save(clean_path)
-            Image.fromarray(crop_dist).save(distorted_path)
+    # Write one JSON manifest
+    manifest_path = os.path.join(output_path, "metadata.json")
+    with open(manifest_path, "w") as mf:
+        json.dump(metadata_records, mf, indent=1)
 
-            # e) Collect metadata
-            metadata_records.append(
-                {"index": index, "plate_number": plate_txt, "alpha": alpha, "beta": beta, "digit_bboxes": bboxes}
-            )
-
-        # Write one JSON manifest
-        manifest_path = os.path.join(output_path, "metadata.json")
-        with open(manifest_path, "w") as mf:
-            json.dump(metadata_records, mf, indent=1)
-
-    # --- HDF5 output mode ---
-    elif output_type == "h5":
-        # a) Determine final image dims
-        # cropping yields (plate_height, plate_width) OR downscale_size
-        if output_size:
-            final_w, final_h = output_size
-        else:
-            final_w, final_h = width, height
-
-        # b) Determine # of digits from one sample
-        _, _, _, sample_bboxes = create_license_plate(width, height, font_size)
-        digit_count = len(sample_bboxes)
-
-        # c) Prepare output HDF5
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        with h5py.File(output_path, "w") as h5f:
-            clean_ds = h5f.create_dataset(
-                "original",
-                (total_samples, final_h, final_w, 3),
-                dtype="uint8",
-                chunks=(1, final_h, final_w, 3),
-                compression="lzf",
-            )
-            dist_ds = h5f.create_dataset(
-                "distorted",
-                (total_samples, final_h, final_w, 3),
-                dtype="uint8",
-                chunks=(1, final_h, final_w, 3),
-                compression="lzf",
-            )
-            plate_ds = h5f.create_dataset("plate_number", (total_samples,), dtype=h5py.string_dtype("utf-8", length=6))
-            alpha_ds = h5f.create_dataset("alpha", (total_samples,), dtype="f4")
-            beta_ds = h5f.create_dataset("beta", (total_samples,), dtype="f4")
-            bbox_ds = h5f.create_dataset("digit_bboxes", (total_samples, digit_count, 4), dtype="i4")
-
-            # d) Generate & write all samples
-            for index, (alpha, beta) in enumerate(tqdm(angle_list, desc=f"Packing {output_path}")):
-                pil_img, src_pts, plate_txt, bboxes = create_license_plate(width, height, font_size)
-                img_rgb = np.array(pil_img)
-                warped_rgb, dst_pts = warp_image(img_rgb, src_pts, alpha, beta, f=width)
-                noisy_rgb = simulate_noise(warped_rgb)
-                dewarped_rgb = dewarp_image(noisy_rgb, src_pts, dst_pts)
-
-                crop_clean = crop_to_original_size(img_rgb, width, height)
-                crop_dist = crop_to_original_size(dewarped_rgb, width, height)
-
-                if output_size is not None:
-                    crop_clean, _ = downscale_plate(crop_clean, [], output_size)
-                    crop_dist, bboxes = downscale_plate(crop_dist, bboxes, output_size)
-
-                clean_ds[index] = crop_clean
-                dist_ds[index] = crop_dist
-                plate_ds[index] = plate_txt
-                alpha_ds[index] = alpha
-                beta_ds[index] = beta
-                bbox_ds[index] = np.array(bboxes, dtype="i4")
-
-    else:
-        raise ValueError("output_type must be 'folder' or 'h5'")
 
 
 # =====================================
@@ -506,12 +442,12 @@ def main():
         output_size = None
 
     num_train = 2**13  # 8192
-    num_val = 2**11  # 2048
-    num_test = 2**11  # 2048
+    num_val = 2**10  # 1024
+    num_test = 2**10  # 1024
     unique = 32
 
     generate_dataset(
-        output_path="data/unique.h5",
+        output_path="data/unique",
         width=width,
         height=height,
         font_size=font_size,
@@ -519,11 +455,10 @@ def main():
         output_size=output_size,
         mode="random",
         num_samples=unique,
-        output_type="h5",
     )
 
     generate_dataset(
-        output_path="data/train.h5",
+        output_path="data/train",
         width=width,
         height=height,
         font_size=font_size,
@@ -531,10 +466,10 @@ def main():
         output_size=output_size,
         mode="random",
         num_samples=num_train,
-        output_type="h5",
     )
+    
     generate_dataset(
-        output_path="data/val.h5",
+        output_path="data/val",
         width=width,
         height=height,
         font_size=font_size,
@@ -542,11 +477,10 @@ def main():
         output_size=output_size,
         mode="random",
         num_samples=num_val,
-        output_type="h5",
     )
 
     generate_dataset(
-        output_path="data/test.h5",
+        output_path="data/test",
         width=width,
         height=height,
         font_size=font_size,
@@ -554,11 +488,10 @@ def main():
         output_size=output_size,
         mode="random",
         num_samples=num_test,
-        output_type="h5",
     )
 
     generate_dataset(
-        output_path="data/full_grid.h5",
+        output_path="data/full_grid",
         width=width,
         height=height,
         font_size=font_size,
@@ -566,7 +499,6 @@ def main():
         output_size=output_size,
         mode="grid",
         num_samples=1,
-        output_type="h5",
     )
 
 
