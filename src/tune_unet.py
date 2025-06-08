@@ -18,7 +18,7 @@ from tqdm import tqdm
 from types import SimpleNamespace
 from lp_dataset import LicensePlateDataset
 from models.unet import UNet
-from utils import evaluate_model, save_sample_images, set_seed
+from utils.utils import evaluate_model, save_sample_images, set_seed
 
 # =====================================
 # Configuration
@@ -227,9 +227,9 @@ def main():
 
     transform = transforms.Compose([transforms.ToTensor()])
 
-    train_dataset = LicensePlateDataset(image_source="data/train.h5", transform=transform)
-    val_dataset = LicensePlateDataset(image_source="data/val.h5", transform=transform)
-    test_dataset = LicensePlateDataset(image_source="data/test.h5", transform=transform)
+    train_dataset = LicensePlateDataset(image_source="data/train", transform=transform)
+    val_dataset = LicensePlateDataset(image_source="data/val", transform=transform)
+    test_dataset = LicensePlateDataset(image_source="data/test", transform=transform)
 
     print(f"Data loaded: Train={len(train_dataset)}, Val={len(val_dataset)}, Test={len(test_dataset)}")
 
