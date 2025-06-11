@@ -1,6 +1,10 @@
-# src/lp_processing.py
+# scripts/lp_processing.py
 
 import os
+import sys
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import random
 import json
 import cv2
@@ -173,10 +177,7 @@ def simulate_noise(image, debug_dir=None):
     if debug_dir is not None:
         os.makedirs(debug_dir, exist_ok=True)
         step_idx = 0
-        cv2.imwrite(
-            os.path.join(debug_dir, f"step_{step_idx}_input.png"),
-            cv2.cvtColor(image, cv2.COLOR_RGB2BGR),
-        )
+        cv2.imwrite(os.path.join(debug_dir, f"step_{step_idx}_input.png"), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
         step_idx += 1
 
     # apply double edge detection
@@ -185,10 +186,7 @@ def simulate_noise(image, debug_dir=None):
     blurred_image = cv2.addWeighted(image, 0.7, double_edges, 0.3, 0)
     image_bgr = cv2.cvtColor(blurred_image.astype(np.uint8), cv2.COLOR_RGB2BGR)
     if debug_dir:
-        cv2.imwrite(
-            os.path.join(debug_dir, f"step_{step_idx}_double_edges+shadows.png"),
-            image_bgr,
-        )
+        cv2.imwrite(os.path.join(debug_dir, f"step_{step_idx}_double_edges+shadows.png"), image_bgr)
         step_idx += 1
 
     # Simplified ISP pipeline
@@ -209,10 +207,7 @@ def simulate_noise(image, debug_dir=None):
     # Denoising (light Gaussian blur)
     image_bgr = cv2.GaussianBlur(image_bgr, (3, 3), sigmaX=1.0, sigmaY=1.0)
     if debug_dir:
-        cv2.imwrite(
-            os.path.join(debug_dir, f"step_{step_idx}_denoised_GaussianBlur.png"),
-            image_bgr,
-        )
+        cv2.imwrite(os.path.join(debug_dir, f"step_{step_idx}_denoised_GaussianBlur.png"), image_bgr)
         step_idx += 1
 
     # JPEG compression simulation quality 20 block size 8x8
@@ -355,57 +350,55 @@ def generate_dataset(
     num_samples=None,  # total samples for random, per-angle cap for grid
 ):
 
-    # 1) Seed
+    # Seed
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)
 
-    # 2) Build list of (alpha, beta) angles
+    # Build list of (alpha, beta) angles
     if mode == "random":
         if num_samples is None:
             raise ValueError("num_samples must be set when mode='random'")
         sobol_power = int(np.log2(num_samples))
         alpha_arr, beta_arr = sample_alpha_beta_sobol(
-            m_power=sobol_power, alpha_min=80.0, alpha_max=89.0, beta_min=0.0, beta_max=89.0, s=1.0, k=1.5, seed=seed
+            m_power=sobol_power, alpha_min=80.0, alpha_max=89.0, beta_min=0.0, beta_max=89.0, s=15.0, k=1.5, seed=seed
         )
         angle_list = [(round(alpha_arr[i], 1), round(beta_arr[i], 1)) for i in range(num_samples)]
 
     elif mode == "grid":
-        if num_samples is None:
-            raise ValueError("num_samples must be set when mode='grid'")
         per_angle = min(num_samples, 5)
-        angle_list = [(a, b) for a in range(90) for b in range(90) for _ in range(per_angle)]
+        angle_list = [(a, b) for a in range(90) for b in range(90) if not (a < 45 and b < 45) for _ in range(per_angle)]
 
     else:
         raise ValueError("mode must be 'random' or 'grid'")
-    
+
     os.makedirs(output_path, exist_ok=True)
     metadata_records = []
 
     for index, (alpha, beta) in enumerate(tqdm(angle_list, desc=f"Generating {output_path}")):
-        # a) Draw and warp plate
+        # Draw and warp plate
         pil_img, src_pts, plate_txt, bboxes = create_license_plate(width, height, font_size)
         img_rgb = np.array(pil_img)
         warped_rgb, dst_pts = warp_image(img_rgb, src_pts, alpha, beta, f=width)
         noisy_rgb = simulate_noise(warped_rgb)
         dewarped_rgb = dewarp_image(noisy_rgb, src_pts, dst_pts)
 
-        # b) Crop back to original plate area
+        # Crop back to original plate area
         crop_clean = crop_to_original_size(img_rgb, width, height)
         crop_dist = crop_to_original_size(dewarped_rgb, width, height)
 
-        # c) Optional downscale
+        # Optional downscale
         if output_size is not None:
             crop_clean, _ = downscale_plate(crop_clean, [], output_size)
             crop_dist, bboxes = downscale_plate(crop_dist, bboxes, output_size)
 
-        # d) Save PNGs
+        # Save PNGs
         clean_path = os.path.join(output_path, f"original_{index}.png")
         distorted_path = os.path.join(output_path, f"distorted_{index}.png")
         Image.fromarray(crop_clean).save(clean_path)
         Image.fromarray(crop_dist).save(distorted_path)
 
-        # e) Collect metadata
+        # Collect metadata
         metadata_records.append(
             {"index": index, "plate_number": plate_txt, "alpha": alpha, "beta": beta, "digit_bboxes": bboxes}
         )
@@ -414,7 +407,6 @@ def generate_dataset(
     manifest_path = os.path.join(output_path, "metadata.json")
     with open(manifest_path, "w") as mf:
         json.dump(metadata_records, mf, indent=1)
-
 
 
 # =====================================
@@ -467,7 +459,7 @@ def main():
         mode="random",
         num_samples=num_train,
     )
-    
+
     generate_dataset(
         output_path="data/val",
         width=width,
@@ -498,7 +490,7 @@ def main():
         seed=seed + 4,
         output_size=output_size,
         mode="grid",
-        num_samples=1,
+        num_samples=5,
     )
 
 
