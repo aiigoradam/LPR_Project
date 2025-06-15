@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from scipy.stats import qmc
+from scipy.ndimage import distance_transform_edt
 from tqdm import tqdm
 
 # =====================================
@@ -269,69 +270,72 @@ def downscale_plate(image, bboxes, target_size):
     return down_img, down_bboxes
 
 
-def sample_alpha_beta_sobol(m_power, alpha_min, alpha_max, beta_min, beta_max, s, k, seed=None):
-
+def sample_alpha_beta_sobol(m_power, l_max, u_max, l_bend, u_bend, smoothing_scale, seed=None):
+    """
+    Sobol sampling of (alpha,beta) from the logistic-smoothed region
+    defined by your two curves on [0,89]^2, then folded into (-90,90)^2.
+    """
+    # number of samples
     N = 2**m_power
 
-    # precompute alpha‐marginal CDF
-    na = 600
-    nb = 6000
-    alphas = np.linspace(alpha_min, alpha_max, na)
-    dalpha = alphas[1] - alphas[0]
+    # 1) build grid
+    na = 500
+    alphas = np.linspace(0, 89, na)
+    dal = alphas[1] - alphas[0]
+    betas = np.linspace(0, 89, na)
+    db = betas[1] - betas[0]
+    A, B = np.meshgrid(alphas, betas, indexing="xy")
 
-    beta_grid = np.linspace(beta_min, beta_max, nb)
-    dbeta = beta_grid[1] - beta_grid[0]
+    # 2) define your curves using the passed parameters
+    def lower(t):
+        r = np.clip(t / l_max, 0, 1)
+        return l_max * (1 - r**l_bend) ** (1 / l_bend)
 
-    # location function
-    def m_func(a):
-        return 84.4086 - np.exp(0.9873 * a - 84.0848)
+    def upper(t):
+        r = np.clip(t / u_max, 0, 1)
+        return u_max * (1 - r**u_bend) ** (1 / u_bend)
 
-    # build un-normalized joint g on (alpha,beta) grid
-    A, B = np.meshgrid(alphas, beta_grid, indexing="xy")
-    alpha_norm = (A - alpha_min) / (alpha_max - alpha_min)
-    beta_norm = B / beta_max
-    g = beta_norm ** (k * (1 - alpha_norm)) / (1 + np.exp((B - m_func(A)) / s))
+    # 3) hard mask of the region
+    mask = (B >= lower(A)) & (B <= upper(A)) & (A >= lower(B)) & (A <= upper(B))
 
-    # marginal f_alpha(alpha)
-    g_int = np.trapz(g, beta_grid, axis=0)
-    f_alpha = g_int / np.trapz(g_int, alphas)
-    cdf_alpha = np.cumsum(f_alpha) * dalpha
+    # 4) signed distance
+    dist_in = distance_transform_edt(mask, sampling=(db, dal))
+    dist_out = distance_transform_edt(~mask, sampling=(db, dal))
+    phi = dist_in - dist_out
+
+    # 5) logistic smoothing
+    W = 1.0 / (1.0 + np.exp(-phi / smoothing_scale))
+
+    # 6) normalize to a PDF
+    total = np.trapz(np.trapz(W, betas, axis=0), alphas)
+    pdf = W / total
+
+    # 7) marginal in alpha, conditional in beta|alpha
+    f_alpha = np.trapz(pdf, betas, axis=0)
+    cdf_alpha = np.cumsum(f_alpha) * dal
     cdf_alpha /= cdf_alpha[-1]
 
-    # one Sobol draw in 3D
+    cdf_beta = np.cumsum(pdf, axis=0) * db
+    cdf_beta /= cdf_beta[-1, :]
+
+    # 8) draw Sobol points in 3D
     sobol = qmc.Sobol(d=3, scramble=True, seed=seed)
-    u = sobol.random_base2(m=m_power)  # shape (N,3)
+    u = sobol.random_base2(m=m_power)
     u0, u1, u2 = u[:, 0], u[:, 1], u[:, 2]
 
-    samples = np.zeros((N, 2))
+    # 9) invert CDFs
+    ix = np.searchsorted(cdf_alpha, u0, side="right")
+    samp_a = alphas[ix]
+    samp_b = np.array([np.interp(u1[i], cdf_beta[:, ix[i]], betas) for i in range(N)])
 
-    for i in range(N):
-        # invert alpha‐CDF
-        a = np.interp(u0[i], cdf_alpha, alphas)
+    # 10) fold into the four quadrants
+    region_id = np.minimum((u2 * 4).astype(int), 3)
+    sign_x = np.where((region_id & 1) == 0, 1, -1)
+    sign_y = np.where((region_id & 2) == 0, 1, -1)
+    alpha_out = sign_x * samp_a
+    beta_out = sign_y * samp_b
 
-        # build & invert beta|alpha
-        raw = 1 / (1 + np.exp((beta_grid - m_func(a)) / s))
-        weight = (beta_grid / beta_max) ** (k * (1 - (a - alpha_min) / (alpha_max - alpha_min)))
-        g_b = raw * weight
-        Zb = np.trapz(g_b, beta_grid)
-        cdf_b = np.cumsum(g_b / Zb) * dbeta
-        b = np.interp(u1[i], cdf_b, beta_grid)
-
-        # pick one of 8 regions
-        rid = min(int(u2[i] * 8), 7)
-        if rid < 4:
-            # f(alpha,beta)
-            sx = 1 if (rid & 1) == 0 else -1
-            sy = 1 if (rid >> 1 & 1) == 0 else -1
-            samples[i] = (sx * a, sy * b)
-        else:
-            # f(beta,alpha)
-            r2 = rid - 4
-            sx = 1 if (r2 & 1) == 0 else -1
-            sy = 1 if (r2 >> 1 & 1) == 0 else -1
-            samples[i] = (sx * b, sy * a)
-
-    return samples[:, 0], samples[:, 1]
+    return alpha_out, beta_out
 
 
 # =====================================
@@ -344,33 +348,31 @@ def generate_dataset(
     width,
     height,
     font_size,
-    seed=None,
+    seed=42,
     output_size=None,
     mode="random",  # "random" or "grid"
-    num_samples=None,  # total samples for random, per-angle cap for grid
+    num_samples=5,  # total samples for random, or 5 for grid by default
 ):
 
-    # Seed
-    if seed is not None:
-        random.seed(seed)
-        np.random.seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
 
     # Build list of (alpha, beta) angles
     if mode == "random":
-        if num_samples is None:
-            raise ValueError("num_samples must be set when mode='random'")
         sobol_power = int(np.log2(num_samples))
         alpha_arr, beta_arr = sample_alpha_beta_sobol(
-            m_power=sobol_power, alpha_min=80.0, alpha_max=89.0, beta_min=0.0, beta_max=89.0, s=15.0, k=1.5, seed=seed
+            m_power=sobol_power,
+            l_max=82.0,
+            u_max=88.0,
+            l_bend=5.0,
+            u_bend=20.0,
+            smoothing_scale=1.2,
+            seed=seed,
         )
         angle_list = [(round(alpha_arr[i], 1), round(beta_arr[i], 1)) for i in range(num_samples)]
 
     elif mode == "grid":
-        per_angle = min(num_samples, 5)
-        angle_list = [(a, b) for a in range(90) for b in range(90) if not (a < 45 and b < 45) for _ in range(per_angle)]
-
-    else:
-        raise ValueError("mode must be 'random' or 'grid'")
+        angle_list = [(a, b) for a in range(90) for b in range(90) for _ in range(num_samples)]
 
     os.makedirs(output_path, exist_ok=True)
     metadata_records = []
@@ -482,16 +484,16 @@ def main():
         num_samples=num_test,
     )
 
-    generate_dataset(
-        output_path="data/full_grid",
-        width=width,
-        height=height,
-        font_size=font_size,
-        seed=seed + 4,
-        output_size=output_size,
-        mode="grid",
-        num_samples=5,
-    )
+    # generate_dataset(
+    #     output_path="data/full_grid",
+    #     width=width,
+    #     height=height,
+    #     font_size=font_size,
+    #     seed=seed + 4,
+    #     output_size=output_size,
+    #     mode="grid",
+    #     num_samples=5,
+    # )
 
 
 if __name__ == "__main__":
