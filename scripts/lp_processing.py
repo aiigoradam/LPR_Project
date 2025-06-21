@@ -69,7 +69,7 @@ def create_license_plate(plate_width=256, plate_height=64, font_size=100, num_ch
 
 
 # =====================================
-# Image Warping and Distortion
+# Warping and Noise
 # =====================================
 
 
@@ -218,8 +218,8 @@ def simulate_noise(image, debug_dir=None):
         cv2.imwrite(os.path.join(debug_dir, f"step_{step_idx}_jpeg_compressed.png"), image_bgr)
         step_idx += 1
     # Add Contrast
-    alpha = 1.5  # Contrast control (1.0-3.0)
-    beta = -50  # Brightness control (0-100)
+    alpha = np.random.uniform(1.4, 1.6)  # Contrast control (1.4-1.6)
+    beta = np.random.uniform(-55, -45)  # Brightness control (-45, -55)
     image_bgr = cv2.convertScaleAbs(image_bgr, alpha=alpha, beta=beta)
     if debug_dir:
         cv2.imwrite(os.path.join(debug_dir, f"step_{step_idx}_contrast.png"), image_bgr)
@@ -270,7 +270,7 @@ def downscale_plate(image, bboxes, target_size):
     return down_img, down_bboxes
 
 
-def sample_alpha_beta_sobol(m_power, l_max, u_max, l_bend, u_bend, smoothing_scale, seed=None):
+def sample_alpha_beta_sobol(m_power, l_max, u_max, l_bend, u_bend, smoothing_scale, k_suppression=0.0, seed=None):
     """
     Sobol sampling of (alpha,beta) from the logistic-smoothed region
     defined by your two curves on [0,89]^2, then folded into (-90,90)^2.
@@ -278,7 +278,7 @@ def sample_alpha_beta_sobol(m_power, l_max, u_max, l_bend, u_bend, smoothing_sca
     # number of samples
     N = 2**m_power
 
-    # 1) build grid
+    # build grid
     na = 500
     alphas = np.linspace(0, 89, na)
     dal = alphas[1] - alphas[0]
@@ -286,7 +286,7 @@ def sample_alpha_beta_sobol(m_power, l_max, u_max, l_bend, u_bend, smoothing_sca
     db = betas[1] - betas[0]
     A, B = np.meshgrid(alphas, betas, indexing="xy")
 
-    # 2) define your curves using the passed parameters
+    # define curves using the passed parameters
     def lower(t):
         r = np.clip(t / l_max, 0, 1)
         return l_max * (1 - r**l_bend) ** (1 / l_bend)
@@ -295,22 +295,31 @@ def sample_alpha_beta_sobol(m_power, l_max, u_max, l_bend, u_bend, smoothing_sca
         r = np.clip(t / u_max, 0, 1)
         return u_max * (1 - r**u_bend) ** (1 / u_bend)
 
-    # 3) hard mask of the region
+    # hard mask of the region
     mask = (B >= lower(A)) & (B <= upper(A)) & (A >= lower(B)) & (A <= upper(B))
 
-    # 4) signed distance
+    # signed distance
     dist_in = distance_transform_edt(mask, sampling=(db, dal))
     dist_out = distance_transform_edt(~mask, sampling=(db, dal))
     phi = dist_in - dist_out
 
-    # 5) logistic smoothing
+    # logistic smoothing
     W = 1.0 / (1.0 + np.exp(-phi / smoothing_scale))
 
-    # 6) normalize to a PDF
+    # optional corner suppression
+    if k_suppression > 0:
+        alpha_norm = A / A.max()
+        beta_norm = B / B.max()
+        small = np.minimum(alpha_norm, beta_norm)
+        large = np.maximum(alpha_norm, beta_norm)
+        suppression = 1 - (1 - small) * (1 - large**k_suppression)
+        W *= suppression
+
+    # normalize to a PDF
     total = np.trapz(np.trapz(W, betas, axis=0), alphas)
     pdf = W / total
 
-    # 7) marginal in alpha, conditional in beta|alpha
+    # marginal in alpha, conditional in beta|alpha
     f_alpha = np.trapz(pdf, betas, axis=0)
     cdf_alpha = np.cumsum(f_alpha) * dal
     cdf_alpha /= cdf_alpha[-1]
@@ -318,17 +327,17 @@ def sample_alpha_beta_sobol(m_power, l_max, u_max, l_bend, u_bend, smoothing_sca
     cdf_beta = np.cumsum(pdf, axis=0) * db
     cdf_beta /= cdf_beta[-1, :]
 
-    # 8) draw Sobol points in 3D
+    # draw Sobol points in 3D
     sobol = qmc.Sobol(d=3, scramble=True, seed=seed)
     u = sobol.random_base2(m=m_power)
     u0, u1, u2 = u[:, 0], u[:, 1], u[:, 2]
 
-    # 9) invert CDFs
+    # invert CDFs
     ix = np.searchsorted(cdf_alpha, u0, side="right")
     samp_a = alphas[ix]
     samp_b = np.array([np.interp(u1[i], cdf_beta[:, ix[i]], betas) for i in range(N)])
 
-    # 10) fold into the four quadrants
+    # fold into the four quadrants
     region_id = np.minimum((u2 * 4).astype(int), 3)
     sign_x = np.where((region_id & 1) == 0, 1, -1)
     sign_y = np.where((region_id & 2) == 0, 1, -1)
@@ -349,6 +358,7 @@ def generate_dataset(
     height,
     font_size,
     seed=42,
+    sobol_params=None,
     output_size=None,
     mode="random",  # "random" or "grid"
     num_samples=5,  # total samples for random, or 5 for grid by default
@@ -362,11 +372,12 @@ def generate_dataset(
         sobol_power = int(np.log2(num_samples))
         alpha_arr, beta_arr = sample_alpha_beta_sobol(
             m_power=sobol_power,
-            l_max=82.0,
-            u_max=88.0,
-            l_bend=5.0,
-            u_bend=20.0,
-            smoothing_scale=1.2,
+            l_max=sobol_params["l_max"],
+            u_max=sobol_params["u_max"],
+            l_bend=sobol_params["l_bend"],
+            u_bend=sobol_params["u_bend"],
+            smoothing_scale=sobol_params["smoothing_scale"],
+            k_suppression=sobol_params["k_suppression"],
             seed=seed,
         )
         angle_list = [(round(alpha_arr[i], 1), round(beta_arr[i], 1)) for i in range(num_samples)]
@@ -412,6 +423,57 @@ def generate_dataset(
 
 
 # =====================================
+# per-dataset configuration
+# =====================================
+DATASETS = {
+    "A": {
+        "sobol_params": {
+            "l_max": 82.0,
+            "u_max": 88.0,
+            "l_bend": 5.0,
+            "u_bend": 20.0,
+            "smoothing_scale": 1.2,
+            "k_suppression": 30.0,
+        },
+        "splits": {
+            "train": 8192,
+            "val": 1024,
+            "test": 1024,
+        },
+    },
+    "B": {
+        "sobol_params": {
+            "l_max": 82.0,
+            "u_max": 88.0,
+            "l_bend": 5.0,
+            "u_bend": 20.0,
+            "smoothing_scale": 1.2,
+            "k_suppression": 30.0,
+        },
+        "splits": {
+            "train": 16384,
+            "val": 2048,
+            "test": 2048,
+        },
+    },
+    "C": {
+        "sobol_params": {
+            "l_max": 82.0,
+            "u_max": 89.5,
+            "l_bend": 15.0,
+            "u_bend": 50.0,
+            "smoothing_scale": 1.0,
+            "k_suppression": 25.0,
+        },
+        "splits": {
+            "train": 8192,
+            "val": 1024,
+            "test": 1024,
+        },
+    },
+}
+
+# =====================================
 # Main Function
 # =====================================
 
@@ -435,53 +497,52 @@ def main():
     else:
         output_size = None
 
-    num_train = 2**13  # 8192
-    num_val = 2**10  # 1024
-    num_test = 2**10  # 1024
-    unique = 32
+    dataset_name = "C"
+    cfg = DATASETS[dataset_name]
 
     generate_dataset(
-        output_path="data/unique",
+        output_path=f"data/{dataset_name}/unique",
         width=width,
         height=height,
         font_size=font_size,
         seed=seed,
+        sobol_params=cfg["sobol_params"],
         output_size=output_size,
         mode="random",
-        num_samples=unique,
+        num_samples=32,
     )
-
     generate_dataset(
-        output_path="data/train",
+        output_path=f"data/{dataset_name}/train",
         width=width,
         height=height,
         font_size=font_size,
         seed=seed + 1,
+        sobol_params=cfg["sobol_params"],
         output_size=output_size,
         mode="random",
-        num_samples=num_train,
+        num_samples=cfg["splits"]["train"],
     )
-
     generate_dataset(
-        output_path="data/val",
+        output_path=f"data/{dataset_name}/val",
         width=width,
         height=height,
         font_size=font_size,
         seed=seed + 2,
+        sobol_params=cfg["sobol_params"],
         output_size=output_size,
         mode="random",
-        num_samples=num_val,
+        num_samples=cfg["splits"]["val"],
     )
-
     generate_dataset(
-        output_path="data/test",
+        output_path=f"data/{dataset_name}/test",
         width=width,
         height=height,
         font_size=font_size,
         seed=seed + 3,
+        sobol_params=cfg["sobol_params"],
         output_size=output_size,
         mode="random",
-        num_samples=num_test,
+        num_samples=cfg["splits"]["test"],
     )
 
     # generate_dataset(
