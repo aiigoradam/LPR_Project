@@ -92,7 +92,6 @@ def train(
 
                     optimizer.zero_grad()
                     outputs = model(distorted_images)
-                    outputs = outputs.clamp(0.0, 1.0)  # Ensure outputs are in [0, 1]
                     loss = criterion(outputs, original_images)
                     loss.backward()
                     nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
