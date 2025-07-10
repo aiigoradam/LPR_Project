@@ -32,11 +32,11 @@ EXPERIMENT_NAME = args.experiment_name
 RESULTS_ROOT = f"results/{EXPERIMENT_NAME}"
 
 MODELS = [
-    "unet_base",
-    "unet_conditional",
+    #"unet_base",
+    #"unet_conditional",
     "restormer",
-    "pix2pix",
-    "diffusion_sr3",
+    #"pix2pix",
+    #"diffusion_sr3",
 ]
 
 # override if passed

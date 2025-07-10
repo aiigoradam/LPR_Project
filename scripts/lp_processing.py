@@ -383,7 +383,7 @@ def generate_dataset(
         angle_list = [(round(alpha_arr[i], 1), round(beta_arr[i], 1)) for i in range(num_samples)]
 
     elif mode == "grid":
-        angle_list = [(a, b) for a in range(90) for b in range(90) for _ in range(num_samples)]
+        angle_list = [(a, b) for a in range(90) for b in range(90) for _ in range(2 if a <= 60 and b <= 60 else 10)]
 
     os.makedirs(output_path, exist_ok=True)
     metadata_records = []
@@ -500,61 +500,61 @@ def main():
     dataset_name = "C"
     cfg = DATASETS[dataset_name]
 
-    generate_dataset(
-        output_path=f"data/{dataset_name}/unique",
-        width=width,
-        height=height,
-        font_size=font_size,
-        seed=seed,
-        sobol_params=cfg["sobol_params"],
-        output_size=output_size,
-        mode="random",
-        num_samples=32,
-    )
-    generate_dataset(
-        output_path=f"data/{dataset_name}/train",
-        width=width,
-        height=height,
-        font_size=font_size,
-        seed=seed + 1,
-        sobol_params=cfg["sobol_params"],
-        output_size=output_size,
-        mode="random",
-        num_samples=cfg["splits"]["train"],
-    )
-    generate_dataset(
-        output_path=f"data/{dataset_name}/val",
-        width=width,
-        height=height,
-        font_size=font_size,
-        seed=seed + 2,
-        sobol_params=cfg["sobol_params"],
-        output_size=output_size,
-        mode="random",
-        num_samples=cfg["splits"]["val"],
-    )
-    generate_dataset(
-        output_path=f"data/{dataset_name}/test",
-        width=width,
-        height=height,
-        font_size=font_size,
-        seed=seed + 3,
-        sobol_params=cfg["sobol_params"],
-        output_size=output_size,
-        mode="random",
-        num_samples=cfg["splits"]["test"],
-    )
-
     # generate_dataset(
-    #     output_path="data/full_grid",
+    #     output_path=f"data/{dataset_name}/unique",
     #     width=width,
     #     height=height,
     #     font_size=font_size,
-    #     seed=seed + 4,
+    #     seed=seed,
+    #     sobol_params=cfg["sobol_params"],
     #     output_size=output_size,
-    #     mode="grid",
-    #     num_samples=5,
+    #     mode="random",
+    #     num_samples=32,
     # )
+    # generate_dataset(
+    #     output_path=f"data/{dataset_name}/train",
+    #     width=width,
+    #     height=height,
+    #     font_size=font_size,
+    #     seed=seed + 1,
+    #     sobol_params=cfg["sobol_params"],
+    #     output_size=output_size,
+    #     mode="random",
+    #     num_samples=cfg["splits"]["train"],
+    # )
+    # generate_dataset(
+    #     output_path=f"data/{dataset_name}/val",
+    #     width=width,
+    #     height=height,
+    #     font_size=font_size,
+    #     seed=seed + 2,
+    #     sobol_params=cfg["sobol_params"],
+    #     output_size=output_size,
+    #     mode="random",
+    #     num_samples=cfg["splits"]["val"],
+    # )
+    # generate_dataset(
+    #     output_path=f"data/{dataset_name}/test",
+    #     width=width,
+    #     height=height,
+    #     font_size=font_size,
+    #     seed=seed + 3,
+    #     sobol_params=cfg["sobol_params"],
+    #     output_size=output_size,
+    #     mode="random",
+    #     num_samples=cfg["splits"]["test"],
+    # )
+
+    generate_dataset(
+        output_path="data/full_grid",
+        width=width,
+        height=height,
+        font_size=font_size,
+        seed=seed + 4,
+        output_size=output_size,
+        mode="grid",
+        num_samples=5,
+    )
 
 
 if __name__ == "__main__":

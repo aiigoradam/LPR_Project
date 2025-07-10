@@ -16,7 +16,7 @@ plots/
 mlruns/
 results/
 results_/
-results_extr/
+
 
 # Ignore model checkpoints
 models/*.h5

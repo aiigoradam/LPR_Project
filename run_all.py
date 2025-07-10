@@ -6,28 +6,28 @@ import subprocess
 # ============ USER CONFIGURATION ============
 
 CONDA_ENV = "lpr2"
-DATASET_NAME = "A"
+DATASET_NAME = "B"
 DATA_ROOT = os.path.join("data", DATASET_NAME)
 
 TRAIN_SCRIPTS = [
     #"src/train_unet_base.py",
-    #"src/train_unet_conditional.py",
-    #"src/train_restormer.py",
-    #"src/train_pix2pix.py",
-    "src/train_diffusion_sr3.py",
+    # "src/train_unet_conditional.py",
+    # "src/train_restormer.py",
+    # "src/train_pix2pix.py",
+    # "src/train_diffusion_sr3.py",
 ]
 
 INFERENCE_MODELS = [
-    #"unet_base",
-    #"unet_conditional",
-    #"restormer",
-    #"pix2pix",
+    "unet_base",
+    "unet_conditional",
+    "restormer",
+    "pix2pix",
     "diffusion_sr3",
 ]
 
 METRICS_MODELS = [
-    #"unet_base",
-    #"unet_conditional",
+    "unet_base",
+    "unet_conditional",
     "restormer",
     "pix2pix",
     "diffusion_sr3",
@@ -67,7 +67,7 @@ def run_inference():
             "--steps",
             "10",
             "--batch-size",
-            "32",
+            "64",
         ]
     )
     print(">>>", " ".join(cmd))
