@@ -1,12 +1,5 @@
-# Virtual environment
-env/
-*.env
-
 # Python cache files
 __pycache__/
-
-# Jupyter Notebook checkpoints
-*.ipynb_checkpoints/
 
 # Folders
 data/
@@ -15,8 +8,6 @@ data_test/
 plots/
 mlruns/
 results/
-results_/
-
 
 # Ignore model checkpoints
 models/*.h5
