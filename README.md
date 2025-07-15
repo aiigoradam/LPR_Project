@@ -1,4 +1,4 @@
-**Project Framework Overview**
+## Project Framework Overview
 
 All code is run in a dedicated Anaconda environment (`environment.yml` file), which includes PyTorch, OpenCV, Tesseract OCR, MLflow, and other required libraries. Installing and activating this environment ensures all dependencies are available for every script. The project is organized as follows:
 
@@ -10,13 +10,13 @@ All code is run in a dedicated Anaconda environment (`environment.yml` file), wh
 
 ---
 
-**Dataset Generation**
+### Dataset Generation
 
 `lp_processing.py` – This script runs the full dataset generation pipeline, from creating clean plates to saving them in the data folder. In the main, we can set all the related parameters of the clean plates’ dimensions, font, the sampling PDF, the number of samples, etc. By default, three datasets are created and saved in `data/{dataset}/split/` folders as paired `original_{index}.png` and `distorted_{index}.png` images. Each split includes a `metadata.json` file that records the plate text, distortion angles, and bounding boxes for every digit, linking each distorted image with its clean original. A fixed random seed is used for reproducibility.
 
 ---
 
-**Models and Training Workflow**
+### Models and Training Workflow
 
 The `models/` folder stores all our models: U-Net, Conditional U-Net, Restormer, Pix2Pix GAN, diffusion SR3. Each model takes a distorted plate image and returns a restored image of the same size.
 
@@ -31,7 +31,7 @@ Training scripts (`src/`) all follow the same steps:
 
 ---
 
-**Inference and Evaluation Scripts**
+### Inference and Evaluation Scripts
 
 * **run\_inference.py** – This script loads trained models from MLflow and applies them to the `data/full_grid/` set. It loads each model under the chosen dataset name, moves the model to the GPU, and enables evaluation mode. For U-Net, U-Net Conditional, Restormer, and Pix2Pix, each distorted image is fed through the network, and the restored output is saved in `results/{dataset}/{model}/`. For the diffusion model, it performs the scheduled denoising loop before saving the image. The script measures the average inference time per image and writes it to `inference_times.csv`. Command line flags control parameters such as model names, batch size, and diffusion sampling steps.
 * **compute\_metrics.py** – Script compares each reconstructed image with its clean original. It looks up the plate text, angle pair, and digit boxes in `metadata.json`. For each image, it reports plate-level and digit-level metrics. It runs Tesseract in digit mode, extracts the digit patch, preprocesses it, and applies recognition. If recognition fails or is incomplete, the script tries alternative preprocessing or attempts to identify the digit from a full plate. All values (raw data) are saved to a CSV at `results/{dataset}/{model_name}.csv`.
@@ -39,7 +39,7 @@ Training scripts (`src/`) all follow the same steps:
 
 ---
 
-**Jupyter Notebooks**
+### Jupyter Notebooks
 
 Several notebooks are included at the project root. These are not part of the main pipeline, but are used for checking, validation, and making figures.
 
